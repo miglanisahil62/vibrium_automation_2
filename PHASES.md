@@ -14,7 +14,11 @@
 
 4. **Property name casing:** lowercase across the board (`coll_*`, `dpd`). VB_Prompt_Doc uses uppercase prefixes (`COLL_*`, `DPD`) — these are wrong. Engine code uses lowercase.
 
-5. **`tag_group` column in `collection_comment_data`** — NOT yet verified. Still pending an AWS Redshift check. If absent, Phase 7's primary disposition-wakeup join changes to (customer_id + time-bound) triangulation.
+5. **`tag_group` is NOT a column in `collection_comment_data`** (verified via Redshift introspection 2026-05-30). The table stores metadata as free-text key:value pairs in the `comment` column. **Decision:** Phase 7's primary disposition-wakeup join is **(customer_id + time-bound) triangulation** using `wf_pending_actions.fired_at_ist`. No CT `tag_group` payload, no `ingest.py` filter patch, no `decision_log` schema change. The two ingest systems remain non-overlapping because each consults a different reference table (`pending_actions` vs `wf_pending_actions`) to claim a comment.
+
+   - **Phase 3** — `clevertap_trigger.py` no longer needs a `tag_group` kwarg; `ingest.py` is not modified at all; the adhoc system change reduces to a single `audit.record_fire(...)` line + the `pre_call_gate` library refactor.
+   - **Phase 6** — workflow_scheduler records exact `fired_at_ist` in `wf_pending_actions`. Cooldown remains 3h per customer (matches adhoc) to make time-bound matching unambiguous.
+   - **Phase 7** — disposition_wakeup matches on `(customer_id, comment_create_date BETWEEN fired_at_ist AND fired_at_ist + INTERVAL '24h')`. The 3h cooldown + per-customer cap makes ambiguity vanishingly small.
 
 ## Phase Closure Definition (applies to ALL phases)
 

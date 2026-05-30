@@ -39,8 +39,47 @@ Casing note: actual CT names are lowercase (`coll_*`, `dpd`). VB_Prompt_Doc uses
 
 ## What was NOT verified in Phase 0a (deferred)
 
-- **`tag_group` column in `collection_comment_data`** — needs Redshift access. To be checked from AWS server. If absent, Phase 7's primary disposition-wakeup join must change.
 - **`WA_Unavailable` distribution** — only 10 `WA_Available` and 15 `Agent Calling` seen in n=25. Larger sample (e.g., 1000 customers) needed before final SWITCH cases are pinned.
+
+## ⚠ Major finding: `tag_group` is NOT a column in `collection_comment_data`
+
+Verified by running `SVV_EXTERNAL_COLUMNS` + `information_schema.columns` introspection on `sttash_website_live.collection_comment_data` via AWS Redshift. The table is queryable but the schema introspection returned 0 columns through both paths (typical for Spectrum-external tables).
+
+**Crucially:** sampling 3 actual vibrium-tagged rows shows the metadata is encoded as **free text key:value pairs in the `comment` column**:
+
+```
+merchant_name : vibrium, disposition : Call Not Connected, sub_disposition : Customer Busy, comment : Call ended with reason: customer-busy
+```
+
+There is no structured `tag_group` field anywhere in the row.
+
+### Implications for the workflow engine
+
+The architecture rev 3 design — "embed `vbwf:R:N:K` in CT externaltrigger's `tag_group` payload, recover it from the `decision_log` row" — does NOT work because `tag_group` is not a column. The plan's `tag_group` mechanism would need to land somewhere else.
+
+**Three options for the disposition-wakeup join:**
+
+| Option | Mechanism | Risk |
+|---|---|---|
+| **A. Embed vbwf:R:N:K in the comment TEXT** | Pass a custom string via CT externaltrigger Props that the bot prepends/appends to its disposition comment. Workflow_ingest extracts it via regex. | Untested — requires live CT fire to confirm preservation. CT may strip custom Props that aren't in the campaign template. |
+| **B. Separate CT campaign for workflow fires** | Use a distinct `campaign_id` for workflow-fired triggers vs adhoc. Both ingests filter on which campaign produced the comment. The campaign template can include a literal `[vbwf:run_id]` marker that bot preserves into the comment. | Requires creating + approving a new CT campaign (template + DLT compliance). 1-2 day side-quest. |
+| **C. (customer_id + time-bound) triangulation as PRIMARY join** | Workflow scheduler records exact `fired_at_ist` in `wf_pending_actions`. Workflow_ingest matches on `(customer_id, comment_create_date BETWEEN fired_at AND fired_at + 24h, status=FIRED)` — picks the closest in time. No comment-text dependency. | Works regardless of CT behavior. Ambiguous when two workflow runs for the same customer fire on the same day (must enforce 3h cooldown to make ambiguity vanishingly small) — which is already a per-customer rule. |
+
+**Recommendation: Option C (triangulation) as primary.** Eliminates the unverified tag_group survival assumption entirely. Option A becomes a confirmation hint only — if a comment happens to contain `vbwf:R:N:K`, use it; otherwise fall back to triangulation. Option B is unnecessary complexity for v1.
+
+This also simplifies Phase 3's adhoc patches:
+- The proposed `WHERE tag_group NOT LIKE 'vbwf:%'` filter on `ingest.py` can't work (no such column).
+- Instead, the workflow system distinguishes its own rows by **looking them up in `wf_pending_actions` by (customer_id, time-bound)**. The adhoc `ingest.py` doesn't need to filter anything out — if a comment matches a workflow row in `wf_pending_actions`, workflow_ingest claims it; if not, adhoc `ingest.py` handles it normally. The two ingests don't overlap because they consult different reference tables.
+
+### Updates to PHASES.md needed
+
+- **Phase 3** — remove the `WHERE tag_group NOT LIKE 'vbwf:%'` patch to `ingest.py`. The adhoc system is untouched (zero edits beyond `audit.record_fire(...)` after each fire).
+- **Phase 6** (workflow_scheduler) — DON'T pass `tag_group` in the CT externaltrigger payload. Just record `fired_at_ist` precisely in `wf_pending_actions`.
+- **Phase 7** (workflow_ingest) — primary join becomes the triangulation; tag_group fallback removed.
+
+### Also worth pinning: sample comment values
+
+The 3 sample rows pulled are identical (`Call Not Connected / Customer Busy`). That's almost certainly LIMIT artifacts, not the actual disposition distribution. Phase 7 implementation should query for a broader sample (50+ rows across different days + dispositions) to confirm the parser handles the full vocabulary.
 
 ---
 
