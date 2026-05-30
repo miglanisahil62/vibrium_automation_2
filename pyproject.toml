@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibrium_workflow"
+version = "0.0.1"
+description = "Node-based, live-editable collections-call workflow engine."
+requires-python = ">=3.11,<3.13"
+authors = [{ name = "Sahil Miglani", email = "sahil.miglani@stashfin.com" }]
+readme = "README.md"
+dependencies = [
+    "simpleeval==0.9.13",
+    "requests==2.32.3",
+    "python-dateutil==2.9.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.3.5",
+    "pytest-mock==3.14.0",
+]
+
+[tool.setuptools]
+# Phase 0: explicit package list, not auto-discovery, so we don't accidentally
+# package `external/` (symlinked) or `state/` (DB files).
+packages = [
+    "workflow",
+    "workflow.agents",
+    "workflow.agents.workflow_handlers",
+    "workflow.migrations",
+    "workflow.tests",
+    "shared",
+    "scripts",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["workflow/tests"]
+addopts = "-q --strict-markers"

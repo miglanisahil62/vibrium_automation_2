@@ -1,0 +1,57 @@
+{
+  "_comment": "Copy to config.json and fill in real values. Never commit config.json (gitignored). All paths are absolute; ~ is not expanded.",
+
+  "shadow_mode": true,
+  "_shadow_mode_note": "When true, FIRE_VB_CALL handler logs intended fires to workflow_node_log but does NOT insert into wf_pending_actions. Default true for safety; flip to false ONLY after Phase 12 shadow run + Sahil 'go'.",
+
+  "db": {
+    "workflow_db_path": "/Users/sahil.m/vibrium-workflow/state/workflow.db",
+    "vibrium_db_path": "/Users/sahil.m/vibrium-automation/state/vibrium.db",
+    "_vibrium_db_note": "Read-only from workflow code, except for the additive customer_call_audit table (Phase 1 migration 002)."
+  },
+
+  "clevertap": {
+    "creds_file": "/Users/sahil.m/Collections_v3/Clevertap campaigns/config_CT_credentials.json",
+    "_creds_file_note": "Same file the adhoc system uses. Override at runtime via CT_CREDS_FILE env var. File contains account_id + passcode; not committed.",
+    "region_base_url": "https://in1.api.clevertap.com/1",
+    "request_timeout_seconds": [5, 30]
+  },
+
+  "redshift": {
+    "creds_file": "/Users/sahil.m/collection-risk-scoring/config_db.json",
+    "_creds_file_note": "Reused for collection_comment_data reads in workflow_ingest. Override via REDSHIFT_CREDS_FILE env var."
+  },
+
+  "executor": {
+    "tick_batch_limit": 200,
+    "_tick_batch_limit_note": "Max workflow_runs advanced per tick; cap surfaces in Phase 8.5 alerts when reached repeatedly."
+  },
+
+  "scheduler": {
+    "max_calls_per_customer_per_day": 3,
+    "rbi_window_start_hour_ist": 8,
+    "rbi_window_end_hour_ist": 19,
+    "cooldown_minutes": 180,
+    "_window_note": "08:00-19:00 IST hard rule (RBI Fair Practice Code). Enforced by pre_call_gate.is_callable_now()."
+  },
+
+  "enrollment": {
+    "max_new_enrollments_per_day_default": 1000,
+    "max_new_enrollments_per_tick": 200,
+    "hard_abort_threshold": 5000,
+    "narrow_window_start_hour_ist": 8,
+    "narrow_window_end_hour_ist": 18,
+    "_hard_abort_note": "Any single tick that would create > hard_abort_threshold runs exits non-zero + alerts (Phase 8.5). Override needs --force flag + Sahil 'go'."
+  },
+
+  "alerts": {
+    "to_email": "sahil.miglani@stashfin.com",
+    "smtp_creds_file": "/Users/sahil.m/.smtp_creds.json",
+    "_smtp_note": "Loaded only by the alerts daemon; workflow code does not import smtplib directly."
+  },
+
+  "operator": {
+    "approver": "sahil.miglani@stashfin.com",
+    "requires_approval_for_first_activation": true
+  }
+}

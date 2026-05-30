@@ -7,3 +7,13 @@ state/*.db
 .DS_Store
 *.log
 .pytest_cache/
+
+# Local-only config (commit config.example.json; never config.json).
+config.json
+
+# external/ holds machine-local symlinks to sibling repos. The shim
+# (__init__.py) is tracked; the symlinks themselves are recreated per-machine
+# by following the Phase 0 setup instructions.
+external/vibrium_automation_scripts
+external/*/
+!external/__init__.py
