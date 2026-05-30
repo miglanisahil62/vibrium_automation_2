@@ -2,7 +2,19 @@
 
 > Companion to `~/.claude/plans/this-is-for-vibrium-wiggly-puffin.md` (the approved architecture). This document is the **execution plan**: every phase is scoped, dependency-ordered, audit-gated, and assignable to a separate creator agent.
 
-> **Plan rev:** 1.1 — incorporates master-auditor PASS_WITH_NOTES findings (3 P0s, 7 P1s) on rev 1.0. Audit report at `docs/plan_audit_2026-05-30.md` (master-auditor agent ab5e15ba919f964e3).
+> **Plan rev:** 1.2 — Phase 0a smoke test complete; design clarifications from author (Sahil) incorporated. Audit report at `docs/plan_audit_2026-05-30.md`; Phase 0a decision at `docs/phase_0a_decision.md`.
+
+## Post-Phase-0a clarifications (binding for all later phases)
+
+1. **`coll_bot_calling` is READ-ONLY for the engine.** The granular trigger values (`ai_vb_calling_highv1`, `_midv1`, `_mid_v2/v3/v4`) are set "directly in the journey" by an upstream system. The engine polls CT for transitions to those values and enrolls customers. **Phase 4c's `SET_CT_PROP` handler does NOT write `coll_bot_calling`.** It remains available for other property writes (e.g., marking journey state on CT) but is not part of the seed workflow.
+
+2. **`coll_notification_replied` values: `'WA_Available'`, `'WA_Unavailable'`, `'Agent Calling'`, and possibly others.** Confirmed by sample probe of 25 wasim customers. Engine treats this as a generic string property the operator can filter on. Doc's `WA_Available`/`WA_Unavailable` are real values.
+
+3. **Low Risk branch (`risk_segmentation >= 8`) is a TODO node in the seed workflow.** The SWITCH node has a `Low` case that routes to a placeholder node labeled `LOW_RISK_TODO`. Operator edits that node in the UI to add filters + actions when the Low policy is finalized. This is the engine's value prop in action.
+
+4. **Property name casing:** lowercase across the board (`coll_*`, `dpd`). VB_Prompt_Doc uses uppercase prefixes (`COLL_*`, `DPD`) — these are wrong. Engine code uses lowercase.
+
+5. **`tag_group` column in `collection_comment_data`** — NOT yet verified. Still pending an AWS Redshift check. If absent, Phase 7's primary disposition-wakeup join changes to (customer_id + time-bound) triangulation.
 
 ## Phase Closure Definition (applies to ALL phases)
 
