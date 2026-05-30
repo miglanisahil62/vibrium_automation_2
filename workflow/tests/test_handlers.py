@@ -32,11 +32,15 @@ from workflow.agents.workflow_handlers import (
     Run,
 )
 from workflow.agents.workflow_handlers import await_disposition as await_mod
+from workflow.agents.workflow_handlers import branch_on_disposition as branch_mod
 from workflow.agents.workflow_handlers import condition as condition_mod
+from workflow.agents.workflow_handlers import counter as counter_mod
 from workflow.agents.workflow_handlers import enroll as enroll_mod
 from workflow.agents.workflow_handlers import fetch_ct_props as fetch_mod
 from workflow.agents.workflow_handlers import fire_vb_call as fire_mod
+from workflow.agents.workflow_handlers import switch as switch_mod
 from workflow.agents.workflow_handlers import terminate as terminate_mod
+from workflow.agents.workflow_handlers import wait_until as wait_mod
 from workflow.wf_store import get_workflow_db, transaction
 
 
@@ -99,14 +103,23 @@ def _node(node_type: str, config: dict, edges: dict = None) -> NodeConfig:
 
 
 class TestRegistry:
-    def test_six_keys_exact(self):
+    def test_twelve_keys_exact(self):
         assert set(REGISTRY.keys()) == {
+            # Phase 4a
             "ENROLL",
             "FETCH_CT_PROPS",
             "CONDITION",
             "FIRE_VB_CALL",
             "AWAIT_DISPOSITION",
             "TERMINATE",
+            # Phase 4b
+            "SWITCH",
+            "WAIT_UNTIL",
+            "BRANCH_ON_DISPOSITION",
+            "COUNTER",
+            # Phase 4c
+            "SET_CT_PROP",
+            "ASSIGN_AGENT",
         }
 
     def test_all_handlers_callable(self):
@@ -451,3 +464,507 @@ class TestTerminate:
             base_run, ctx=None, txn=None,
         )
         assert base_run.ready_at_ist is None
+
+
+# --------------------------------------------------------------------------
+# SET_CT_PROP  (Phase 4c)
+# --------------------------------------------------------------------------
+
+
+from workflow.agents.workflow_handlers import set_ct_prop as set_ct_prop_mod
+from workflow.agents.workflow_handlers import assign_agent as assign_agent_mod
+from workflow.types import SetResult
+
+
+class TestSetCtProp:
+    def test_happy_path_success(self, monkeypatch, base_run: Run):
+        """CT 2xx + identity NOT in unprocessed → next_edge='success'."""
+        captured: dict = {}
+
+        def fake_set_profile(identity, properties, *, dry_run=False, creds_path=None):
+            captured["identity"] = identity
+            captured["properties"] = properties
+            captured["dry_run"] = dry_run
+            return SetResult(success=True, error_code=None, raw_response={"status": "success"})
+
+        monkeypatch.setattr(set_ct_prop_mod.clevertap_profile, "set_profile", fake_set_profile)
+        node = _node("SET_CT_PROP", {"properties": {"coll_workflow_state": "in_progress"}})
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert "last_ct_prop_set_at" in result.scratchpad_patch
+        assert captured["identity"] == base_run.customer_id
+        assert captured["properties"] == {"coll_workflow_state": "in_progress"}
+        assert captured["dry_run"] is False
+        assert "set_profile cid=" in (result.side_effect or "")
+
+    def test_ct_failure_routes_to_error_with_code(self, monkeypatch, base_run: Run):
+        """SetResult.success=False → next_edge='error', error_code in scratchpad."""
+        monkeypatch.setattr(
+            set_ct_prop_mod.clevertap_profile,
+            "set_profile",
+            lambda identity, properties, *, dry_run=False, creds_path=None:
+                SetResult(success=False, error_code=516, raw_response={}),
+        )
+        node = _node("SET_CT_PROP", {"properties": {"coll_workflow_state": "x"}})
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert result.scratchpad_patch["set_ct_prop_error_code"] == 516
+        assert "FAIL" in (result.side_effect or "")
+
+    def test_coll_bot_calling_guard_fires(self, monkeypatch, base_run: Run):
+        """Phase 0a invariant: handler MUST refuse to write coll_bot_calling.
+
+        The guard must fire WITHOUT calling set_profile — i.e. no CT request
+        is ever issued. We assert that by setting set_profile to raise.
+        """
+        def boom(*a, **k):
+            raise AssertionError("set_profile must NOT be called when guard fires")
+
+        monkeypatch.setattr(set_ct_prop_mod.clevertap_profile, "set_profile", boom)
+        node = _node("SET_CT_PROP", {
+            "properties": {
+                "coll_workflow_state": "x",
+                "coll_bot_calling": "ai_vb_calling_highv1",  # FORBIDDEN
+            },
+        })
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert "forbidden_property" in result.scratchpad_patch["set_ct_prop_error"]
+        assert "coll_bot_calling" in result.scratchpad_patch["set_ct_prop_error"]
+
+    def test_dry_run_skips_real_ct_call(self, monkeypatch, base_run: Run):
+        """dry_run=True via ctx → no HTTP call; side_effect notes DRY-RUN."""
+        called = {"n": 0}
+
+        def fake_set_profile(*a, **k):
+            called["n"] += 1
+            return SetResult(success=True, error_code=None, raw_response={})
+
+        monkeypatch.setattr(set_ct_prop_mod.clevertap_profile, "set_profile", fake_set_profile)
+        node = _node("SET_CT_PROP", {"properties": {"k": "v"}})
+        result = set_ct_prop_mod.execute(node, base_run, ctx={"dry_run": True}, txn=None)
+        assert result.next_edge == "success"
+        assert called["n"] == 0
+        assert "DRY-RUN" in (result.side_effect or "")
+        assert "last_ct_prop_set_at" in result.scratchpad_patch
+
+    def test_dry_run_via_kwarg_also_works(self, monkeypatch, base_run: Run):
+        """dry_run=True via kwarg (executor's call path) → no HTTP call."""
+        def boom(*a, **k):
+            raise AssertionError("set_profile must NOT be called under dry_run")
+
+        monkeypatch.setattr(set_ct_prop_mod.clevertap_profile, "set_profile", boom)
+        node = _node("SET_CT_PROP", {"properties": {"k": "v"}})
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None, dry_run=True)
+        assert result.next_edge == "success"
+        assert "DRY-RUN" in (result.side_effect or "")
+
+    def test_multiple_properties_passed_through(self, monkeypatch, base_run: Run):
+        """All requested keys reach set_profile in a single call."""
+        captured: dict = {}
+
+        def fake_set_profile(identity, properties, *, dry_run=False, creds_path=None):
+            captured["properties"] = dict(properties)
+            return SetResult(success=True, error_code=None, raw_response={})
+
+        monkeypatch.setattr(set_ct_prop_mod.clevertap_profile, "set_profile", fake_set_profile)
+        node = _node("SET_CT_PROP", {
+            "properties": {
+                "coll_workflow_state": "in_progress",
+                "coll_last_journey_node": "fire_vb_call_1",
+                "coll_attempt_count": 2,
+            },
+        })
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert captured["properties"] == {
+            "coll_workflow_state": "in_progress",
+            "coll_last_journey_node": "fire_vb_call_1",
+            "coll_attempt_count": 2,
+        }
+
+    def test_missing_properties_config_errors(self, base_run: Run):
+        node = _node("SET_CT_PROP", {})
+        result = set_ct_prop_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert "set_ct_prop_error" in result.scratchpad_patch
+
+
+# --------------------------------------------------------------------------
+# ASSIGN_AGENT  (Phase 4c)
+# --------------------------------------------------------------------------
+
+
+class TestAssignAgent:
+    def test_happy_path_inserts_row(self, workflow_db, base_run: Run):
+        """One INSERT, scratchpad records assigned_at + assigned_reason."""
+        node = _node("ASSIGN_AGENT", {"reason": "dispute_or_nrp"})
+        with transaction(workflow_db):
+            result = assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        assert result.next_edge == "next"
+        assert result.scratchpad_patch["assigned_reason"] == "dispute_or_nrp"
+        assert "assigned_at" in result.scratchpad_patch
+
+        rows = workflow_db.execute(
+            "SELECT customer_id, reason, source, assigned_at_ist, run_id "
+            "FROM agent_assignments"
+        ).fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["customer_id"] == base_run.customer_id
+        assert row["reason"] == "dispute_or_nrp"
+        assert row["run_id"] == base_run.id
+        assert row["assigned_at_ist"] is not None
+
+    def test_source_field_format(self, workflow_db, base_run: Run):
+        """source = 'workflow:<wf_id>:v<ver_id>' — matches FIRE_VB_CALL cohort."""
+        node = _node("ASSIGN_AGENT", {"reason": "max_attempts_reached"})
+        with transaction(workflow_db):
+            assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        row = workflow_db.execute(
+            "SELECT source FROM agent_assignments"
+        ).fetchone()
+        assert row["source"] == f"workflow:{base_run.workflow_id}:v{base_run.version_id}"
+
+    def test_no_dedupe_two_calls_two_rows(self, workflow_db, base_run: Run):
+        """Two consecutive ASSIGN_AGENT executes → two rows. No UNIQUE
+        constraint on this table by design (see module docstring).
+        """
+        node = _node("ASSIGN_AGENT", {"reason": "unhandled_disposition"})
+        with transaction(workflow_db):
+            assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        with transaction(workflow_db):
+            assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        count = workflow_db.execute(
+            "SELECT COUNT(*) AS c FROM agent_assignments"
+        ).fetchone()["c"]
+        assert count == 2
+
+    def test_caller_owned_transaction(self, workflow_db, base_run: Run):
+        """Handler uses the passed-in txn, does NOT commit on its own.
+
+        We start a transaction, run the handler, then ROLLBACK and assert
+        no row landed — proving the handler does not commit.
+        """
+        node = _node("ASSIGN_AGENT", {"reason": "test_rollback"})
+        workflow_db.execute("BEGIN IMMEDIATE")
+        try:
+            assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+            # Sanity: row visible inside the open txn.
+            mid = workflow_db.execute(
+                "SELECT COUNT(*) AS c FROM agent_assignments WHERE reason='test_rollback'"
+            ).fetchone()["c"]
+            assert mid == 1
+        finally:
+            workflow_db.execute("ROLLBACK")
+        after = workflow_db.execute(
+            "SELECT COUNT(*) AS c FROM agent_assignments WHERE reason='test_rollback'"
+        ).fetchone()["c"]
+        assert after == 0
+
+    def test_missing_reason_routes_to_error(self, workflow_db, base_run: Run):
+        node = _node("ASSIGN_AGENT", {})
+        with transaction(workflow_db):
+            result = assign_agent_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        assert result.next_edge == "error"
+        # And no row inserted.
+        count = workflow_db.execute(
+            "SELECT COUNT(*) AS c FROM agent_assignments"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_dry_run_skips_insert(self, workflow_db, base_run: Run):
+        node = _node("ASSIGN_AGENT", {"reason": "dispute_or_nrp"})
+        result = assign_agent_mod.execute(
+            node, base_run, ctx={"dry_run": True}, txn=workflow_db,
+        )
+        assert result.next_edge == "next"
+        assert "DRY-RUN" in (result.side_effect or "")
+        count = workflow_db.execute(
+            "SELECT COUNT(*) AS c FROM agent_assignments"
+        ).fetchone()["c"]
+        assert count == 0
+
+
+# --------------------------------------------------------------------------
+# SWITCH (Phase 4b)
+# --------------------------------------------------------------------------
+
+
+class TestSwitch:
+    def test_happy_path_matches_case(self, base_run: Run):
+        base_run.scratchpad = {"risk_segmentation": 3}
+        node = _node("SWITCH", {
+            "on": "risk_segmentation",
+            "cases": {"1": "high", "2": "high", "3": "high",
+                      "4": "high", "5": "mid", "6": "mid", "7": "mid"},
+            "default": "low_risk_todo",
+        })
+        result = switch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "high"
+        assert result.scratchpad_patch == {}
+
+    def test_default_fallthrough_when_no_case(self, base_run: Run):
+        # Value 9 is not in cases → default.
+        base_run.scratchpad = {"risk_segmentation": 9}
+        node = _node("SWITCH", {
+            "on": "risk_segmentation",
+            "cases": {"1": "high", "5": "mid"},
+            "default": "low_risk_todo",
+        })
+        result = switch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "low_risk_todo"
+
+    def test_missing_key_routes_to_error(self, base_run: Run):
+        base_run.scratchpad = {"other_key": 5}
+        node = _node("SWITCH", {
+            "on": "risk_segmentation",
+            "cases": {"5": "mid"},
+            "default": "low_risk_todo",
+        })
+        result = switch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert "missing key: risk_segmentation" in result.scratchpad_patch["switch_error"]
+
+    def test_numeric_value_matches_string_key(self, base_run: Run):
+        # Scratchpad value is int 5; case key is the string "5".
+        base_run.scratchpad = {"risk_segmentation": 5}
+        node = _node("SWITCH", {
+            "on": "risk_segmentation",
+            "cases": {"5": "mid"},
+            "default": "low",
+        })
+        result = switch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "mid"
+
+    def test_multiple_distinct_case_values(self, base_run: Run):
+        # Several values from the same `cases` dict each map correctly.
+        cases = {"1": "high", "2": "high", "5": "mid", "7": "mid"}
+        for value, expected_edge in [(1, "high"), (2, "high"),
+                                     (5, "mid"), (7, "mid")]:
+            base_run.scratchpad = {"v": value}
+            node = _node("SWITCH", {"on": "v", "cases": cases, "default": "x"})
+            result = switch_mod.execute(node, base_run, ctx=None, txn=None)
+            assert result.next_edge == expected_edge, f"failed for {value}"
+
+
+# --------------------------------------------------------------------------
+# WAIT_UNTIL (Phase 4b)
+# --------------------------------------------------------------------------
+
+
+class TestWaitUntil:
+    def test_relative_t_plus_1_day(self, base_run: Run):
+        node = _node("WAIT_UNTIL", {"relative": "T+1 day at 08:00"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        assert result.ready_at_ist is not None
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        assert parsed.hour == 8
+        assert parsed.minute == 0
+        now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+        delta = parsed - now
+        # Loose bound — depending on wall-clock, +1 day at 08:00 can be from
+        # a few minutes (just before 08:00) to nearly 2 days (just after 08:00).
+        assert timedelta(minutes=-1) < delta < timedelta(days=2)
+        assert base_run.status == "WAITING"
+        assert base_run.ready_at_ist == result.ready_at_ist
+
+    def test_relative_t_plus_n_hour(self, base_run: Run):
+        node = _node("WAIT_UNTIL", {"relative": "T+3 hour"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+        delta = parsed - now
+        assert timedelta(hours=2, minutes=59) <= delta <= timedelta(hours=3, minutes=1)
+
+    def test_absolute_valid_yyyy_mm_dd(self, base_run: Run):
+        base_run.scratchpad = {"target_date": "2027-01-15"}
+        node = _node("WAIT_UNTIL", {"absolute": "target_date"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        assert result.ready_at_ist == "2027-01-15 00:00:00"
+        assert base_run.status == "WAITING"
+
+    def test_absolute_invalid_format_routes_to_error(self, base_run: Run):
+        # MM/DD/YYYY not accepted.
+        base_run.scratchpad = {"target_date": "01/15/2027"}
+        node = _node("WAIT_UNTIL", {"absolute": "target_date"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert result.scratchpad_patch["wait_error"] == "invalid_date_format"
+
+    def test_late_wakeup_records_ready_at_in_past(self, base_run: Run):
+        # Absolute date in the past — ready_at_ist is still set; executor's
+        # filter handles immediate-fire.
+        base_run.scratchpad = {"target_date": "2020-01-01"}
+        node = _node("WAIT_UNTIL", {"absolute": "target_date"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        assert result.ready_at_ist == "2020-01-01 00:00:00"
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+        assert parsed < now
+        assert "late" in (result.side_effect or "").lower()
+
+
+# --------------------------------------------------------------------------
+# BRANCH_ON_DISPOSITION (Phase 4b — critical surface)
+# --------------------------------------------------------------------------
+
+
+_BRANCH_CASES = {
+    "NOOP": "to_terminate",
+    "RETRY": "to_counter",
+    "PTP_CALL": "to_ptp_wait",
+    "AGREE_EOD_CALL": "to_eod_wait",
+    "CALLBACK_CALL": "to_callback_wait",
+    "RTP_NEEDS_LLM": "to_llm",
+    "ESCALATE": "to_assign_agent",
+}
+
+
+class TestBranchOnDisposition:
+    @pytest.mark.parametrize("action_class,expected_edge", list(_BRANCH_CASES.items()))
+    def test_each_canonical_action_class_branches_correctly(
+        self, base_run: Run, action_class: str, expected_edge: str,
+    ):
+        base_run.scratchpad = {"last_disposition_action_class": action_class}
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": _BRANCH_CASES,
+            "default": "to_terminate",
+        })
+        result = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == expected_edge
+        # Scratchpad-clear contract: every successful branch clears the key.
+        assert result.scratchpad_patch.get("last_disposition_action_class") is None
+
+    def test_unknown_action_class_falls_through_to_default(self, base_run: Run):
+        # action_class not in canonical enum should NOT error — falls through
+        # to default. Protects in-flight runs against a future ingest revision
+        # that adds a new enum value.
+        base_run.scratchpad = {"last_disposition_action_class": "FUTURE_NEW_CLASS"}
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": _BRANCH_CASES,
+            "default": "to_terminate",
+        })
+        result = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "to_terminate"
+        assert result.scratchpad_patch.get("last_disposition_action_class") is None
+
+    def test_missing_disposition_routes_to_error(self, base_run: Run):
+        base_run.scratchpad = {}
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": _BRANCH_CASES,
+            "default": "to_terminate",
+        })
+        result = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert result.scratchpad_patch.get("branch_error") == "no_disposition"
+        # On error we do NOT clear; the key was already absent.
+        assert "last_disposition_action_class" not in result.scratchpad_patch
+
+    def test_scratchpad_cleared_on_successful_branch(self, base_run: Run):
+        # Most important contract: after BRANCH_ON_DISPOSITION fires, a
+        # subsequent revisit must NOT see the same action_class.
+        base_run.scratchpad = {"last_disposition_action_class": "PTP_CALL"}
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": _BRANCH_CASES,
+            "default": "to_terminate",
+        })
+        result = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "to_ptp_wait"
+        # The patch explicitly contains None (signal: clear key).
+        assert "last_disposition_action_class" in result.scratchpad_patch
+        assert result.scratchpad_patch["last_disposition_action_class"] is None
+        # If the executor merged shallow-style, the key would be None —
+        # falsy — so await_disposition correctly would NOT see a stale
+        # disposition on re-entry.
+        merged = {**base_run.scratchpad, **result.scratchpad_patch}
+        assert not merged.get("last_disposition_action_class")
+
+    def test_default_fallthrough_with_missing_case(self, base_run: Run):
+        # Cases dict missing PTP_CALL entirely → default fires.
+        base_run.scratchpad = {"last_disposition_action_class": "PTP_CALL"}
+        partial_cases = {"NOOP": "to_terminate"}
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": partial_cases,
+            "default": "to_default",
+        })
+        result = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "to_default"
+        # Clear still happens on default-fallthrough success.
+        assert result.scratchpad_patch.get("last_disposition_action_class") is None
+
+    def test_multiple_branches_do_not_interfere(self, base_run: Run):
+        # Run handler twice with different action_classes; each branches
+        # independently. Simulates two distinct disposition wakeups.
+        node = _node("BRANCH_ON_DISPOSITION", {
+            "cases": _BRANCH_CASES,
+            "default": "to_terminate",
+        })
+        base_run.scratchpad = {"last_disposition_action_class": "RETRY"}
+        r1 = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r1.next_edge == "to_counter"
+        # Simulate executor merging the patch (shallow merge).
+        base_run.scratchpad = {**base_run.scratchpad, **r1.scratchpad_patch}
+        # A second disposition arrives — ingest writes a new action_class.
+        base_run.scratchpad["last_disposition_action_class"] = "ESCALATE"
+        r2 = branch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r2.next_edge == "to_assign_agent"
+
+
+# --------------------------------------------------------------------------
+# COUNTER (Phase 4b)
+# --------------------------------------------------------------------------
+
+
+class TestCounter:
+    def test_first_increment_from_absent_key(self, base_run: Run):
+        base_run.scratchpad = {}
+        node = _node("COUNTER", {"name": "attempts", "limit": 2})
+        result = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        # 0 → 1, 1 < 2 → under_limit.
+        assert result.next_edge == "under_limit"
+        assert result.scratchpad_patch == {"attempts": 1}
+
+    def test_under_limit_branch(self, base_run: Run):
+        base_run.scratchpad = {"attempts": 0}
+        node = _node("COUNTER", {"name": "attempts", "limit": 3})
+        result = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "under_limit"
+        assert result.scratchpad_patch == {"attempts": 1}
+
+    def test_at_limit_branch(self, base_run: Run):
+        # current=1, increment to 2, limit=2 → at_limit.
+        base_run.scratchpad = {"attempts": 1}
+        node = _node("COUNTER", {"name": "attempts", "limit": 2})
+        result = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "at_limit"
+        assert result.scratchpad_patch == {"attempts": 2}
+
+    def test_repeated_calls_keep_advancing(self, base_run: Run):
+        # Simulate successive ticks through the same COUNTER node.
+        base_run.scratchpad = {}
+        node = _node("COUNTER", {"name": "attempts", "limit": 3})
+
+        r1 = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r1.next_edge == "under_limit"
+        assert r1.scratchpad_patch == {"attempts": 1}
+        base_run.scratchpad = {**base_run.scratchpad, **r1.scratchpad_patch}
+
+        r2 = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r2.next_edge == "under_limit"
+        assert r2.scratchpad_patch == {"attempts": 2}
+        base_run.scratchpad = {**base_run.scratchpad, **r2.scratchpad_patch}
+
+        r3 = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r3.next_edge == "at_limit"
+        assert r3.scratchpad_patch == {"attempts": 3}
+        base_run.scratchpad = {**base_run.scratchpad, **r3.scratchpad_patch}
+
+        # Once at limit, subsequent calls stay at limit (no reset).
+        r4 = counter_mod.execute(node, base_run, ctx=None, txn=None)
+        assert r4.next_edge == "at_limit"
+        assert r4.scratchpad_patch == {"attempts": 4}
