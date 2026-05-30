@@ -477,16 +477,23 @@ def _classify_upload(identity: str, data: dict[str, Any]) -> SetResult:
                                  unprocessed[] is dispositive).
     """
     top_status = data.get("status")
+    unprocessed = data.get("unprocessed") or []
+    unprocessed_count = len(unprocessed)
     if top_status == "fail":
-        log.warning("CT upload rejected for identity=%s body=%s", identity, data)
+        log.warning(
+            "CT upload rejected top_status=fail unprocessed_count=%d",
+            unprocessed_count,
+        )
         return SetResult(success=False, error_code=None, raw_response=data)
 
     if top_status == "partial":
-        log.warning("CT upload partial for identity=%s body=%s", identity, data)
+        log.warning(
+            "CT upload partial top_status=partial unprocessed_count=%d",
+            unprocessed_count,
+        )
         # Don't return yet — still need to check whether OUR identity is the
         # one that failed. The unprocessed-walk below decides.
 
-    unprocessed = data.get("unprocessed") or []
     for rec in unprocessed:
         rec_identity = (rec.get("record") or {}).get("identity")
         if rec_identity is not None and str(rec_identity) == str(identity):

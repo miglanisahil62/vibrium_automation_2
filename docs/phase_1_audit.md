@@ -132,7 +132,76 @@ verdict below. If the auditor returns NEEDS_FIX, this file is updated and
 the fixes applied before Phase 2 starts.
 
 ```
-[ ] master-auditor invoked
-[ ] verdict recorded (PASS / PASS_WITH_NOTES / NEEDS_FIX)
-[ ] P0 findings (if any) applied
+[x] master-auditor invoked
+[x] verdict recorded
+[x] P0 findings (if any) applied — N/A
 ```
+
+---
+
+## master-auditor verdict — 2026-05-30 (re-run after transient socket error)
+
+**Verdict: PASS_WITH_NOTES**
+
+Scope: `migrations/001_init.py`, `migrations/002_customer_call_audit.py`,
+`migrations/runner.py`, `wf_store.py`, `tests/test_migrations.py`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| 11 tables match `docs/architecture.md` rev 3 §"State and persistence" | PASS |
+| 8 indexes present (incl. partial UNIQUE `idx_runs_enrollment_key`, triangulation `idx_wfpa_customer_fired`) | PASS |
+| CHECK constraints on 4 status enums (`workflows.status`, `workflow_runs.status`, `wf_pending_actions.status`, `wf_kill_switch.action`) | PASS |
+| UNIQUE(run_id, node_id, attempt_count) on `wf_pending_actions` | PASS |
+| `tag_group` column absent from every DDL statement (only present in disclaimer comments) | PASS |
+| `wf_pending_actions.fired_at_ist` present + covered by `idx_wfpa_customer_fired` | PASS |
+| WAL applied per-connection via `_apply_pragmas` | PASS |
+| `PRAGMA query_only=1` enforces read-only when `mode='r'` | PASS (asserted by `test_vibrium_db_read_mode_rejects_writes`) |
+| `BEGIN IMMEDIATE` in `transaction()` context manager | PASS |
+| Runner idempotent; reads `schema_version`; first-run handles missing table | PASS |
+| `--dry-run` writes nothing (test asserts neither DB file created) | PASS |
+| Migration 002 purely additive on vibrium.db (no ALTER/DROP; `CREATE … IF NOT EXISTS` only) | PASS |
+| `ATTACH DATABASE` not used anywhere | PASS |
+| `pytest workflow/tests/test_migrations.py -q` | 18/18 PASS |
+| No file under `/Users/sahil.m/vibrium-automation/` modified by Phase 1 | PASS (existing diff on `phase3-shared-audit-cap` branch is Phase 3 scope, not Phase 1) |
+
+### P0 — Must fix before merge
+
+None.
+
+### P1 — Should fix
+
+None.
+
+### P2 — Nice to fix (drive-by, non-blocking)
+
+- **P2-A `_connect()` mkdir docstring drift** (`wf_store.py:73-75`). Comment claims "we do NOT create the parent for vibrium.db" but the code calls `p.parent.mkdir(parents=True, exist_ok=True)` unconditionally for every path. Low impact (vibrium.db's parent dir always exists in deployed envs), but the comment misrepresents behavior. Tighten by gating the mkdir to the workflow-db path or update the comment to match reality.
+- **P2-B `_DEFAULT_VIBRIUM_DB` falls back inside the workflow repo** (`wf_store.py:40`). Defaults are only hit when callers omit `path=`, but a wrong-path silent fallback in production would create a stray empty SQLite at `vibrium-workflow/state/vibrium.db`. Phase 3 + 6 daemons must pass explicit config-resolved paths — confirmed in docstring contract. A runtime assertion (or mirroring migration 002's "raise on None" pattern) would harden the contract. Drive-by.
+- **P2-C `schema_version_vbwf` forensic marker inside vibrium.db** (`002_customer_call_audit.py:84-95`). Additive beyond strict spec; defensible as operator audit aid but doubles the shared-tenant footprint inside vibrium.db. Already disclosed in creator self-audit note #3. Sahil to confirm acceptable.
+- **P2-D No FK constraints on `workflow.db` tables.** `PRAGMA foreign_keys=ON` is set but no `REFERENCES` clauses exist; orphan `run_id`s, `version_id`s, and `workflow_id`s are possible. Out of scope per phase spec; flag for additive migration if integrity issues surface.
+
+### Assumptions made
+
+- Architecture rev 3 in `docs/architecture.md` is the canonical schema spec — verified line-by-line against migration 001 DDL.
+- Phase 1 scope ends at schema + connection helper + migration runner; runtime audit recorder (`shared/customer_call_audit.py`) is Phase 3 and not in this audit.
+- The diff visible on `vibrium-automation` `phase3-shared-audit-cap` branch is Phase 3 work, not contamination from Phase 1 — confirmed by inspecting file paths (`pre_call_gate.py`, `scheduler.py`, `test_pre_call_gate.py`) which are all Phase 3 deliverables per PHASES.md §"Phase 3".
+
+### What I did not audit
+
+- Live deploy/heartbeat — none yet (Phase 1 closure does not require deploy per `Phase Closure Definition` clause 3, which is cross-repo-only).
+- KB self-update — no new gotchas surfaced; KB unchanged.
+
+### Release Gate Status
+
+| # | Gate | Status |
+|---|------|--------|
+| 1 | Static code review (master-auditor) | PASS_WITH_NOTES ✓ — this report |
+| 2 | API / backend QA (/stashfin-qa-backend) | N/A — Phase 1 has no HTTP surface |
+| 3 | Console wiring (sidebar / hub / streamlit_apps) | N/A — Phase 1 is schema only, no UI |
+| 4 | Frontend / UI QA (/stashfin-qa-ui) | N/A — Phase 1 has no UI surface |
+
+Phase 1 is **CLOSED** per `Phase Closure Definition` clauses 1 (tests green) + 2 (auditor PASS_WITH_NOTES) + 4 (this `phase_1_audit.md` is the closure artifact). Clause 3 (cross-repo deploy) does not apply since Phase 1 makes no cross-repo changes — `vibrium.db` migration 002 is applied via the runner at Phase 3 deploy time, not during Phase 1.
+
+**Wave 1 dependent phases (2, 3) may proceed.**
+
