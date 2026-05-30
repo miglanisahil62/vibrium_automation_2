@@ -65,28 +65,34 @@ Schema    CT       Shared
 
 ---
 
-# Phase 0a — tag_group Round-Trip Spike (NEW — P0-2 fix)
+# Phase 0a — tag_group Smoke Test (REVISED 2026-05-30 — Sahil directive: no live fires)
 
-**Why this exists:** The entire disposition-wakeup correctness of the workflow system rests on `tag_group` surviving CT externaltrigger → bot → CRM → `collection_comment_data`. The existing `ingest.py` query does NOT currently project `tag_group`, and CT KB P1-4 notes survival is per-channel (bot-recorded comments preserve it; agent-recorded may strip it). This must be verified BEFORE any other phase commits to the design.
+**Why this exists:** The entire disposition-wakeup correctness rests on `tag_group` surviving CT externaltrigger → bot → CRM → `collection_comment_data`. We need to confirm this WITHOUT firing live test triggers.
 
-**Scope:** Empirical 1-day spike. Read-only on prod data; tiny test fires permitted with Sahil approval.
+**Scope:** Read-only verification using a known wasim cohort customer (`8968249` from `wasim_ptp_21_may.csv`). No CT externaltrigger fires. No CT property writes. No customer impact.
 
 **Deliverables:**
-1. Add (in a throwaway branch) the `tag_group` kwarg to `clevertap_trigger.trigger()` payload — pin the exact JSON path it lands at (`ExternalTrigger.Props.tag_group` or wherever CT's externaltrigger schema accepts custom metadata). Cite a known-working CT campaign example.
-2. Fire 10 test triggers with `tag_group="vbwf:spike:N1:1"` to a known test customer.
-3. Wait 24h to capture both bot-recorded and (where possible) agent-recorded dispositions.
-4. Query `collection_comment_data` directly: `SELECT id, customer_id, comment, tag_group, channel FROM collection_comment_data WHERE tag_group LIKE 'vbwf:%' OR (customer_id = <test_cid> AND ts > <fire_ts>)`.
-5. Document per-channel survival rate in a new KB file `~/.claude/auditor_kb/clevertap-tag-group-roundtrip.md`.
+1. **CT profile GET fixture** — call `GET /1/profile.json?identity=8968249` once; save full JSON to `workflow/tests/fixtures/ct_profile_response.json`. Confirm the 4 target properties (`COLL_collection_risk_segmentation`, `coll_notification_replied`, `coll_bot_calling`, `DPD`) are extractable — record their actual paths in the response. This is the Phase 2 fixture pinned upfront.
+2. **Redshift schema check** — `DESCRIBE collection_comment_data` (or `INFORMATION_SCHEMA.COLUMNS` equivalent). Confirm whether `tag_group` is a real column. Record column list in `docs/phase_0a_collection_comment_data_schema.md`.
+3. **If `tag_group` column exists:** query for existing non-null values across the last 30 days to learn:
+   - Which campaigns currently use `tag_group`.
+   - What format/values they use.
+   - Whether bot-recorded vs agent-recorded comments both carry it.
+   - Save findings to `docs/phase_0a_tag_group_observed_values.md`.
+4. **If `tag_group` column does NOT exist:** redesign the disposition-wakeup join. The PHASES.md Phase 7 fallback ("triangulation by `customer_id` + `fired_at_ist` + `comment_create_date`") becomes the **primary** join. Update PHASES.md accordingly.
+5. **Decision document** — `docs/phase_0a_decision.md` recording: tag_group available? survival hypothesis (since we didn't fire, this is an inference from existing data)? primary vs fallback join?
 
 **Acceptance:**
-- KB file committed with per-channel survival numbers.
-- Decision recorded: "tag_group survives ≥X% on Y channels — primary disposition-wakeup join uses tag_group + lower-bound guard" OR "tag_group is lossy on channel Z — primary join uses (customer_id, fired_at_ist, comment_create_date) triangulation; tag_group is confirmation hint only."
+- `workflow/tests/fixtures/ct_profile_response.json` committed.
+- `docs/phase_0a_collection_comment_data_schema.md` committed with the actual column list.
+- `docs/phase_0a_decision.md` committed with the design decision.
+- If decision = "tag_group missing or unreliable": PHASES.md updated to reflect primary-join change.
 
 **Dependencies:** none (runs before Phase 0).
 
-**Audit gate:** master-auditor on the KB note + the design decision; pipeline-integrity-auditor confirms the test customer wasn't accidentally flagged in any production cohort.
+**Audit gate:** master-auditor on the decision document.
 
-**Owner:** Sahil-directed; a creator agent fires the spike, an auditor verifies, decision recorded.
+**Owner:** Can be executed inline (small smoke test) or as a creator agent if Sahil prefers.
 
 ---
 

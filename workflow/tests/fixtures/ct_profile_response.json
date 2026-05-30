@@ -1,0 +1,674 @@
+{
+  "record": {
+    "platformInfo": [
+      {
+        "ls": 1777817042,
+        "phone": 919780400012,
+        "objectId": "jaWflXtgxZAwaI2oAbZxJOagRfXVDChf",
+        "platform": "Web"
+      },
+      {
+        "df": {},
+        "ls": 1741019495,
+        "phone": 919780400012,
+        "os_version": "18.3.1",
+        "app_version": "5.6.9",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-50147dce079140d9888f7a92906fb6d4",
+        "platform": "iOS"
+      },
+      {
+        "df": {},
+        "ls": 1743440606,
+        "phone": 919780400012,
+        "os_version": "18.3.2",
+        "app_version": "5.6.12",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-096968c657f44d8f9814a9f39127e420",
+        "platform": "iOS"
+      },
+      {
+        "df": {},
+        "ls": 1735841034,
+        "push_token": "d06d2469a60623c31d3309c78380c44b56184039b97a7c3d935b8d8ec4ceab2a",
+        "phone": 919780400012,
+        "os_version": "18.1.1",
+        "app_version": "5.6.6",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-61e3b1a18e2644a78ce13b4ebaab8d03",
+        "platform": "iOS"
+      },
+      {
+        "ls": 1769867644,
+        "phone": 919780400012,
+        "objectId": "18ec185dc8324676baeb84d115050020",
+        "platform": "Web"
+      },
+      {
+        "df": {
+          "2": 450,
+          "1": 120,
+          "0": 60
+        },
+        "ls": 1780041827,
+        "phone": 919780400012,
+        "os_version": "15",
+        "app_version": "6.9.46",
+        "make": "Xiaomi",
+        "model": "24094rad4i",
+        "objectId": "__05eef522858c4b379d8fd043c3c19dbd",
+        "platform": "Android"
+      },
+      {
+        "df": {},
+        "ls": 1760543993,
+        "phone": 919780400012,
+        "os_version": "26.0.1",
+        "app_version": "6.0.0",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-6cd294ddd7364651b8d1eaaa22fc0d1f",
+        "platform": "iOS"
+      },
+      {
+        "df": {},
+        "ls": 1738672215,
+        "phone": 919780400012,
+        "os_version": "18.1.1",
+        "app_version": "5.6.6",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-3bce0bcd3996449a8d37bbd398629c16",
+        "platform": "iOS"
+      },
+      {
+        "df": {},
+        "ls": 1780142627,
+        "push_token": "c52d0ac59204be59fc94c32c6fb5141a891c0d859c9b4e9e366f22ea5a577172",
+        "phone": 919780400012,
+        "os_version": "26.5",
+        "app_version": "6.8.4",
+        "make": "Apple",
+        "model": "Iphone17,1",
+        "objectId": "-f05c15fc1f3e45baa43ce3781ed4a7ec",
+        "platform": "iOS"
+      }
+    ],
+    "identity": "8968249",
+    "name": "SANDEEP SINGH",
+    "email": "manpuria12@gmail.com",
+    "all_identities": [
+      "manpuria12@gmail.com",
+      "8968249",
+      "+919780400012"
+    ],
+    "events": {
+      "App Launched": {
+        "count": 529,
+        "first_seen": 1713721028,
+        "last_seen": 1780043986
+      },
+      "Notification Viewed": {
+        "count": 91,
+        "first_seen": 1726325123,
+        "last_seen": 1780066813
+      },
+      "Notification Clicked": {
+        "count": 9,
+        "first_seen": 1744815375,
+        "last_seen": 1779720779
+      },
+      "Notification Delivered": {
+        "count": 133,
+        "first_seen": 1716461708,
+        "last_seen": 1780140230
+      },
+      "Identity Set": {
+        "count": 9,
+        "first_seen": 1700125175,
+        "last_seen": 1779720416
+      },
+      "App Version Changed": {
+        "count": 17,
+        "first_seen": 1716308691,
+        "last_seen": 1775375148
+      },
+      "Reachable By": {
+        "count": 5,
+        "first_seen": 1700125175,
+        "last_seen": 1779720416
+      },
+      "Push Unregistered": {
+        "count": 2,
+        "first_seen": 1760543993,
+        "last_seen": 1760543993
+      },
+      "Onboarding_Started": {
+        "count": 4,
+        "first_seen": 1718434446,
+        "last_seen": 1735283596
+      },
+      "login_mpin": {
+        "count": 705,
+        "first_seen": 1716308698,
+        "last_seen": 1760244087
+      },
+      "loc_pull": {
+        "count": 15,
+        "first_seen": 1714406503,
+        "last_seen": 1772260241
+      },
+      "AA_approval_click": {
+        "count": 6,
+        "first_seen": 1735278296,
+        "last_seen": 1735362833
+      },
+      "CR_PLANS": {
+        "count": 1,
+        "first_seen": 1751264082,
+        "last_seen": 1751264082
+      },
+      "Upload_bankstatement_submit": {
+        "count": 1,
+        "first_seen": 1735363273,
+        "last_seen": 1735363273
+      },
+      "home_page_clicked": {
+        "count": 685,
+        "first_seen": 1713548260,
+        "last_seen": 1761653228
+      },
+      "marketing_banner_viewed": {
+        "count": 1076,
+        "first_seen": 1713548246,
+        "last_seen": 1760244113
+      },
+      "home_page_viewed": {
+        "count": 1084,
+        "first_seen": 1713548150,
+        "last_seen": 1760244113
+      },
+      "payment_screen_viewed": {
+        "count": 21,
+        "first_seen": 1719593534,
+        "last_seen": 1754844123
+      },
+      "Session Concluded": {
+        "count": 549,
+        "first_seen": 1713548263,
+        "last_seen": 1780043999
+      },
+      "payment_success": {
+        "count": 6,
+        "first_seen": 1719593569,
+        "last_seen": 1738301081
+      },
+      "Page viewed": {
+        "count": 5,
+        "first_seen": 1727281081,
+        "last_seen": 1767196409
+      },
+      "login_success": {
+        "count": 81,
+        "first_seen": 1743440886,
+        "last_seen": 1780043989
+      },
+      "loc_amount_selection_screen": {
+        "count": 5,
+        "first_seen": 1754153002,
+        "last_seen": 1754297213
+      },
+      "loc_emi_selection_screen": {
+        "count": 2,
+        "first_seen": 1754153051,
+        "last_seen": 1754153090
+      },
+      "policy": {
+        "count": 48,
+        "first_seen": 1735280155,
+        "last_seen": 1735984611
+      },
+      "loc_disbursal_in_bank_account": {
+        "count": 10,
+        "first_seen": 1730215905,
+        "last_seen": 1772260240
+      },
+      "Button Clicked": {
+        "count": 59,
+        "first_seen": 1760543963,
+        "last_seen": 1779437027
+      },
+      "Screen View": {
+        "count": 105,
+        "first_seen": 1760543952,
+        "last_seen": 1779721575
+      },
+      "LOC_Offer Details": {
+        "count": 13,
+        "first_seen": 1765811420,
+        "last_seen": 1772260150
+      },
+      "LOC_Draw": {
+        "count": 6,
+        "first_seen": 1765811586,
+        "last_seen": 1772260241
+      },
+      "Insurance attach": {
+        "count": 17,
+        "first_seen": 1751650208,
+        "last_seen": 1779720428
+      },
+      "Insurance attach payment": {
+        "count": 3,
+        "first_seen": 1769866834,
+        "last_seen": 1774971955
+      },
+      "Error Logs": {
+        "count": 1567,
+        "first_seen": 1760543952,
+        "last_seen": 1780043999
+      },
+      "Applaunchwithproperties": {
+        "count": 15,
+        "first_seen": 1760543950,
+        "last_seen": 1763789638
+      },
+      "lending_widget_clicked": {
+        "count": 11,
+        "first_seen": 1760544043,
+        "last_seen": 1763789649
+      },
+      "Back_Button_Clicked": {
+        "count": 37,
+        "first_seen": 1761111895,
+        "last_seen": 1779437027
+      },
+      "Error Shown": {
+        "count": 62,
+        "first_seen": 1764499116,
+        "last_seen": 1777654670
+      },
+      "payment_method": {
+        "count": 20,
+        "first_seen": 1754040834,
+        "last_seen": 1780131420
+      },
+      "Permission_Shown": {
+        "count": 7,
+        "first_seen": 1779720396,
+        "last_seen": 1779720400
+      },
+      "Permission_Denied": {
+        "count": 13,
+        "first_seen": 1779720396,
+        "last_seen": 1779720400
+      },
+      "Exit Popup": {
+        "count": 27,
+        "first_seen": 1761111895,
+        "last_seen": 1775042971
+      },
+      "attach_insurance_buy_success": {
+        "count": 2,
+        "first_seen": 1769866834,
+        "last_seen": 1774971955
+      },
+      "Homepage_Viewed": {
+        "count": 107,
+        "first_seen": 1760543991,
+        "last_seen": 1780043991
+      },
+      "app_store_review_requested": {
+        "count": 12,
+        "first_seen": 1765811591,
+        "last_seen": 1774971957
+      },
+      "LOC_Slider_Screen_Initiated": {
+        "count": 155,
+        "first_seen": 1760544044,
+        "last_seen": 1777654653
+      },
+      "LOC_Slider_Screen_Viewed": {
+        "count": 134,
+        "first_seen": 1760544045,
+        "last_seen": 1777654664
+      },
+      "Loan_Details_Screen_Initiated": {
+        "count": 68,
+        "first_seen": 1764499115,
+        "last_seen": 1777654667
+      },
+      "LOC_Slider_Screen_Clicked": {
+        "count": 127,
+        "first_seen": 1760544046,
+        "last_seen": 1777654666
+      },
+      "Bill_Payments_Landing_Page_Viewed": {
+        "count": 6,
+        "first_seen": 1767015443,
+        "last_seen": 1775043912
+      },
+      "Bill_Payments_Landing_Page_Clicked": {
+        "count": 2,
+        "first_seen": 1767196386,
+        "last_seen": 1775043908
+      },
+      "App_Launched_with_Properties": {
+        "count": 82,
+        "first_seen": 1764499076,
+        "last_seen": 1780043986
+      },
+      "Account_Setup_Page_Viewed": {
+        "count": 1,
+        "first_seen": 1779721577,
+        "last_seen": 1779721577
+      },
+      "Homepage_Clicked": {
+        "count": 135,
+        "first_seen": 1764499085,
+        "last_seen": 1779721572
+      },
+      "FCP_Bill_Date": {
+        "count": 28,
+        "first_seen": 1766021452,
+        "last_seen": 1774315825
+      },
+      "LOC_Error_S2S": {
+        "count": 37,
+        "first_seen": 1760578273,
+        "last_seen": 1777685446
+      },
+      "InAppReview_Initiated": {
+        "count": 6,
+        "first_seen": 1765811589,
+        "last_seen": 1772260242
+      },
+      "Loans_Section_Viewed": {
+        "count": 24,
+        "first_seen": 1767015461,
+        "last_seen": 1779721457
+      },
+      "CCBP_Homepage_Viewed": {
+        "count": 1,
+        "first_seen": 1769867109,
+        "last_seen": 1769867109
+      },
+      "Loans_Section_Clicked": {
+        "count": 3,
+        "first_seen": 1774972002,
+        "last_seen": 1777820586
+      },
+      "EQX_Bureau_pull_triggered_BE": {
+        "count": 2,
+        "first_seen": 1774971816,
+        "last_seen": 1774971816
+      },
+      "Bottom_Popup_Banner_Viewed": {
+        "count": 1,
+        "first_seen": 1779720400,
+        "last_seen": 1779720400
+      },
+      "Bond_Homepage_Clicked": {
+        "count": 1,
+        "first_seen": 1775226287,
+        "last_seen": 1775226287
+      },
+      "UPI_Profile_Menu_Viewed": {
+        "count": 4,
+        "first_seen": 1779720568,
+        "last_seen": 1779721573
+      },
+      "UPI_Profile_Menu_Clicked": {
+        "count": 3,
+        "first_seen": 1779720571,
+        "last_seen": 1779721575
+      },
+      "My_UPI_Screen_Viewed": {
+        "count": 1,
+        "first_seen": 1779721575,
+        "last_seen": 1779721575
+      },
+      "Likelihood Change": {
+        "count": 2,
+        "first_seen": 1774739044,
+        "last_seen": 1776097988
+      },
+      "App_Permission_Screen_Viewed": {
+        "count": 1,
+        "first_seen": 1779720395,
+        "last_seen": 1779720395
+      },
+      "App_Permission_Screen_Clicked": {
+        "count": 2,
+        "first_seen": 1779720396,
+        "last_seen": 1779720397
+      },
+      "UPI_Sdk_Method_Invoked": {
+        "count": 11,
+        "first_seen": 1778672828,
+        "last_seen": 1780043990
+      },
+      "UPI_Sdk_Method_Response_Recieved": {
+        "count": 11,
+        "first_seen": 1778672828,
+        "last_seen": 1780043990
+      },
+      "VKYC_Instruction_Viewed": {
+        "count": 4,
+        "first_seen": 1775021717,
+        "last_seen": 1775041166
+      },
+      "VKYC_Instruction_Clicked": {
+        "count": 5,
+        "first_seen": 1775021743,
+        "last_seen": 1775041201
+      },
+      "AI_call_sent": {
+        "count": 3,
+        "first_seen": 1777776005,
+        "last_seen": 1780037075
+      },
+      "Mystery_Box_Opening": {
+        "count": 1,
+        "first_seen": 1777820563,
+        "last_seen": 1777820563
+      },
+      "Mystery_Box_Eligible": {
+        "count": 1,
+        "first_seen": 1777907713,
+        "last_seen": 1777907713
+      },
+      "Webhook Delivered": {
+        "count": 3,
+        "first_seen": 1777776005,
+        "last_seen": 1780037075
+      },
+      "AI_call_not_answered": {
+        "count": 3,
+        "first_seen": 1777779656,
+        "last_seen": 1780039542
+      },
+      "AI_CT_call_initiation_request_received": {
+        "count": 3,
+        "first_seen": 1777776004,
+        "last_seen": 1780037075
+      },
+      "coll_EMI_due_in_days_updated": {
+        "count": 12,
+        "first_seen": 1777340188,
+        "last_seen": 1780106141
+      },
+      "User_Property_updated": {
+        "count": 204,
+        "first_seen": 1777340176,
+        "last_seen": 1780106694
+      },
+      "User_Property_updated_": {
+        "count": 8,
+        "first_seen": 1777427738,
+        "last_seen": 1777427738
+      },
+      "Loan_Repayment_Screen_Viewed": {
+        "count": 2,
+        "first_seen": 1778672841,
+        "last_seen": 1779437010
+      },
+      "Loan_Repayment_Screen_Clicked": {
+        "count": 1,
+        "first_seen": 1778672877,
+        "last_seen": 1778672877
+      },
+      "Loan_Repayment_Details_Popup_Viewed": {
+        "count": 1,
+        "first_seen": 1778672877,
+        "last_seen": 1778672877
+      },
+      "Loan_Repayment_Details_Popup_Clicked": {
+        "count": 1,
+        "first_seen": 1778672883,
+        "last_seen": 1778672883
+      },
+      "Loan_Repayment_Successful_BE": {
+        "count": 1,
+        "first_seen": 1780131421,
+        "last_seen": 1780131421
+      },
+      "Loan_FCP_Offer_Assigned_BE": {
+        "count": 1,
+        "first_seen": 1779437010,
+        "last_seen": 1779437010
+      },
+      "Collection_Agency_Allocated": {
+        "count": 9,
+        "first_seen": 1779710891,
+        "last_seen": 1779868134
+      }
+    },
+    "profileData": {
+      "acquisitiontype": "android",
+      "program": "",
+      "preferredlanguage": "en",
+      "custid": "8968249",
+      "city": "Ludhiana",
+      "fullname": "",
+      "dob": "$D_353831400",
+      "state": "Punjab",
+      "country": "India",
+      "monthlyincome": "550000",
+      "dayssincejoined": "$D_1663353000",
+      "employmenttype": "self_employed",
+      "activeloanamount": 704165.0,
+      "totalemiamount": 53586.0,
+      "upcomingemiamount": 48485.0,
+      "duedate": "$D_1774981800",
+      "upcomingemitenure": "18",
+      "acquistiontype": "fvpl",
+      "nachpresent?": "yes",
+      "clidoneinthepast": "yes",
+      "reachableby": "Push|fcm:dgGJD3e6D0lEvAyd8IUPLp:APA91bG2bZmRKPKX70e3UF9MGG08B85r3ANE0fGz5X_4D9Aps5KRZ9tdjH9_FfjDmz6jzxwk-EXifHwEJxDNijbf51Eogpkyx7enczKEYQ1_Eq0d5Aa5UY2JNtLHwsJ4_-QwUPOte8uT",
+      "ageof1ststashfinloan": "$D_1664821800",
+      "timesincelastloantaken": "$D_1772217000",
+      "timesincelastloanclosedorforeclosed": "$D_1774895400",
+      "no.ofactiveloans-emi": 10.0,
+      "no.ofactiveloans-fcp": 0.0,
+      "totalloansactive": 10.0,
+      "totalloanslifetime": 23.0,
+      "totalcreditlimit": 400000.0,
+      "unlockedcreditlimit": 450000.0,
+      "lockedcreditlimit": "-50000",
+      "usedcreditlimit(absoluteamount)": 413366.0,
+      "percentageofunlockedcreditused": "85.10%",
+      "percentageoftotalcreditused": "95.74%",
+      "availablecreditlimit": "17035",
+      "daystillnextfcppaymentdate": "$D_1774377000",
+      "loanbook": "AKARA",
+      "maxdpd": "1",
+      "alltimelatecharges": 39215.0,
+      "daystillnextemipayment": "$D_1774981800",
+      "nachamount": "544929",
+      "dayssincelocissue": "$D_1664735400",
+      "dayssincecliwaslastdone": "$D_1691339400",
+      "isfip": "false",
+      "isemi": "true",
+      "isnachregistered": "true",
+      "maxeverdpd": 0,
+      "maxapprovedtenure": "18",
+      "isfcp": "false",
+      "loc_limit": 450000.0,
+      "bill_amount": 351109,
+      "loc_amount": 450000,
+      "disbursedamount": 704165.0,
+      "principaloverdue": 37625.0,
+      "interestoverdue": 14487.0,
+      "totaloverdueamount": 56322.0,
+      "dpd": 29,
+      "coll_amount": 27073,
+      "bill_date": "25/08/25",
+      "limit": 7984,
+      "link": "https://stashfin.com/surl/UkFbF8",
+      "loc": "true",
+      "loc_updated": "yes",
+      "loc_approved_limit": 400000,
+      "loc_current_dpd": 29.0,
+      "update_date": "$D_1779820200",
+      "loan_status": 1,
+      "loc_unwanted_utm": 0,
+      "loc_productcategory_type": "libr8",
+      "loc_available_limit": 37330.0,
+      "loc_can_reload": 1,
+      "loc_unwanted_pin": 0,
+      "loc_max_dpd": 29.0,
+      "loc_latest_disb_date": "2026-02-28",
+      "loc_latest_disb_amt": 40092.0,
+      "salarydate(fcp)": "25th",
+      "id": 8968249,
+      "loc_web_status": "Disbursed",
+      "loc_disbursal_count": "23",
+      "device_id": "740ef2c1a1bc836f",
+      "loc_latest_disb_amount": "37000",
+      "loc_web_disbursal_amount": "37000",
+      "deviceid": "35404003483683402",
+      "loc_update_date": "30-05-2026",
+      "bureau_score": 0,
+      "customername": "SANDEEP  SINGH",
+      "bankname": "HDFC BANK",
+      "bankaccountno": "XXXXXXXXXX7171",
+      "paymentmode": "No Repayment Instrument",
+      "nachactive": "NO",
+      "fcpamount": 38288.0,
+      "fcpduedate": "$D_1774396800",
+      "fcpdueindays": 0,
+      "upcomingemidate": "01 Jun 2026",
+      "emidueindays": 2,
+      "loc_error_code": "LOC_050",
+      "loc_error_flag": 1,
+      "fcp_bill_date": "2026-03-25",
+      "fcp_bill_amount": 38288.0,
+      "fcp": 1,
+      "cc_carded_flag": 1,
+      "akara_id": 8968249,
+      "eqx_id": 2106841,
+      "crif_score": "NaN",
+      "coll_segment_new": -1,
+      "coll_segment_repeat": 7,
+      "coll_total_emi_amount_overdue": 52112.0,
+      "coll_overdue_charges": 4210.0,
+      "coll_due_date": "$D_1777593600",
+      "off_us_max_dpd": 221,
+      "coll_notification_replied": "Agent Calling",
+      "coll_collection_risk_segmentation": 8,
+      "uninstalls-1": "Low",
+      "coll_bot_calling": "AI Calling",
+      "coll_charges_waiver_amount": "302",
+      "april_repeat_user_2026": "true",
+      "may_repeat_user_2026": "true",
+      "coll_agency_allocated_name": "Creditron Services Pvt Ltd"
+    },
+    "language": "English",
+    "locale": "en_IN"
+  },
+  "status": "success"
+}
