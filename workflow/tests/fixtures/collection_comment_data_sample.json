@@ -1,0 +1,40 @@
+{
+  "_README": "Sample rows mirroring the actual collection_comment_data shape observed in Phase 0a. Each row mimics what the Redshift query would return for a vibrium-tagged comment. create_date is naive UTC (matches Redshift's actual return shape). Used by test_workflow_ingest.py.",
+  "rows": [
+    {
+      "id": 1001,
+      "customer_id": "8968249",
+      "comment_id": "cm-1001",
+      "create_date": "2026-05-30T10:00:00",
+      "comment": "merchant_name : vibrium, disposition : Call Not Connected, sub_disposition : Customer Busy, comment : Call ended with reason: customer-busy"
+    },
+    {
+      "id": 1002,
+      "customer_id": "8968249",
+      "comment_id": "cm-1002",
+      "create_date": "2026-05-30T11:00:00",
+      "comment": "merchant_name : vibrium, disposition : PTP, sub_disposition : 15 May 2026, comment : Customer promised to pay"
+    },
+    {
+      "id": 1003,
+      "customer_id": "9999999",
+      "comment_id": "cm-1003",
+      "create_date": "2026-05-30T11:30:00",
+      "comment": "merchant_name : vibrium, disposition : Paid, sub_disposition : Full Payment, comment : Customer paid in full"
+    },
+    {
+      "id": 1004,
+      "customer_id": "5555555",
+      "comment_id": "cm-1004",
+      "create_date": "2026-05-30T12:00:00",
+      "comment": "merchant_name : vibrium, disposition : Call Not Connected, sub_disposition : Phone Switched Off, comment : adhoc-system fire — no workflow row"
+    },
+    {
+      "id": 1005,
+      "customer_id": "8968249",
+      "comment_id": "cm-1005",
+      "create_date": "2026-05-30T12:30:00",
+      "comment": "Some non-vibrium comment from a CRM agent — should be ignored even if it slips past the ILIKE filter."
+    }
+  ]
+}
