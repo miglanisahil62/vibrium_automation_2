@@ -521,17 +521,31 @@ def _process_row(
 
 def run(
     workflow_db_path: PathLike,
-    since: datetime,
     *,
+    since: Optional[datetime] = None,
+    dry_run: bool = False,
     comment_fetcher: Optional[CommentFetcher] = None,
+    **_ignored: object,
 ) -> dict[str, int]:
     """Entrypoint — process new vibrium comments and wake matching runs.
+
+    Signature matches the Phase 9 orchestrator's uniform ``run(**kwargs)``
+    dispatch contract. The orchestrator passes ``workflow_db_path`` +
+    ``dry_run``; everything else has a sensible default.
 
     Args:
         workflow_db_path: absolute path to ``state/workflow.db``.
         since: minimum ``create_date`` to consider on cold start (UTC or IST).
-            The persisted watermark always takes precedence once set.
+            The persisted watermark always takes precedence once set. Defaults
+            to 24 hours ago if not supplied — adequate for steady-state cron
+            invocations where the watermark has long since taken over.
+        dry_run: reserved — currently inert (per-row inserts already gated by
+            the IngestStats counters; no destructive side-effects to skip
+            beyond the wake_at update which is the whole point of ingest).
+            Accepted for orchestrator-uniform contract.
         comment_fetcher: testing hook. Defaults to the Redshift fetcher.
+        **_ignored: orchestrator may thread other daemons' kwargs through
+            generic plumbing; accept and discard rather than TypeError.
 
     Returns:
         A stats dict — see ``IngestStats.to_dict()``.
@@ -539,10 +553,19 @@ def run(
     fetcher = comment_fetcher or _redshift_comment_fetcher
     stats = IngestStats()
 
+    if since is None:
+        # Fallback for orchestrator-driven invocations where no --since is
+        # threaded in. 24h is well past the workflow's 3h cooldown window;
+        # the persisted watermark filters out already-processed rows.
+        since = datetime.now(IST) - timedelta(hours=24)
+
     conn = get_workflow_db(workflow_db_path)
     try:
         watermark = _get_watermark(conn)
-        log.info("watermark=%d since=%s", watermark, since.isoformat())
+        log.info(
+            "watermark=%d since=%s dry_run=%s",
+            watermark, since.isoformat(), dry_run,
+        )
 
         rows = list(fetcher(watermark, since))
         stats.fetched = len(rows)

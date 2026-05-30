@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 # The 6 valid --mode values + their (agent_name, module_path, callable_name)
 # triples. Daemon names MUST match Phase 8.5's contract.
 _MODE_REGISTRY: dict[str, tuple[str, str, str]] = {
-    "executor":   ("workflow_executor",   "workflow.agents.workflow",   "_run_executor_mode"),
+    "executor":   ("workflow_executor",   "workflow.agents.workflow",    "run"),
     "scheduler":  ("workflow_scheduler",  "workflow.workflow_scheduler", "run"),
     "ingest":     ("workflow_ingest",     "workflow.workflow_ingest",    "run"),
     "enrollment": ("workflow_enrollment", "workflow.enrollment_poller",  "run"),
@@ -91,24 +91,6 @@ def _emit_heartbeat(
             "heartbeat write failed agent=%s status=%s err=%s",
             agent, status, exc,
         )
-
-
-def _run_executor_mode(
-    *,
-    workflow_db_path: Path,
-    dry_run: bool = False,
-    batch_limit: int = 100,
-    **_ignored,
-) -> dict[str, Any]:
-    """Adapter — WorkflowAgent.tick() doesn't follow the run(*, ...) shape
-    exactly, so wrap it here."""
-    from workflow.agents.workflow import WorkflowAgent
-
-    agent = WorkflowAgent(
-        workflow_db_path=str(workflow_db_path),
-        batch_limit=batch_limit,
-    )
-    return agent.tick(dry_run=dry_run)
 
 
 def _dispatch(

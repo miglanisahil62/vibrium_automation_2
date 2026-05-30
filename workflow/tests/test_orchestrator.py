@@ -224,3 +224,143 @@ class _Mod:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+
+# --------------------------------------------------------------------- P0 contract
+
+
+def _setup_real_modules_db(tmp_path: Path) -> Path:
+    """Build a workflow.db with enough schema to call the REAL run() on each
+    of the 6 daemons without crashing.
+
+    Used by test_dispatch_real_modules_no_typeerror — the contract regression
+    test that catches:
+      P0-1 (Phase 9 audit): _MODE_REGISTRY pointing at a non-existent callable.
+      P0-2 (Phase 9 audit): real run() signatures incompatible with the
+                            orchestrator's uniform kwargs.
+    """
+    db = tmp_path / "workflow.db"
+    cn = sqlite3.connect(str(db))
+    cn.executescript("""
+        CREATE TABLE wf_agent_events (
+          id INTEGER PRIMARY KEY, ts_ist TEXT NOT NULL, agent TEXT NOT NULL,
+          status TEXT, summary_json TEXT
+        );
+        CREATE TABLE workflows (
+          id INTEGER PRIMARY KEY, name TEXT, status TEXT,
+          active_version_id INTEGER,
+          shadow_mode INTEGER DEFAULT 1, requires_approval INTEGER DEFAULT 1,
+          max_new_enrollments_per_day INTEGER DEFAULT 1000,
+          enrollment_key_template TEXT, created_at_ist TEXT, created_by TEXT
+        );
+        CREATE TABLE workflow_versions (
+          id INTEGER PRIMARY KEY, workflow_id INTEGER, version INTEGER,
+          graph_json TEXT, validation_status TEXT, validation_errors TEXT,
+          approved_at_ist TEXT, approved_by TEXT,
+          created_at_ist TEXT, created_by TEXT,
+          UNIQUE(workflow_id, version)
+        );
+        CREATE TABLE workflow_runs (
+          id INTEGER PRIMARY KEY, workflow_id INTEGER, version_id INTEGER,
+          customer_id TEXT, enrollment_key TEXT,
+          current_node_id TEXT, current_node_type TEXT,
+          entered_node_at_ist TEXT, status TEXT,
+          scratchpad_json TEXT, ready_at_ist TEXT,
+          enrolled_at_ist TEXT, updated_at_ist TEXT,
+          terminated_at_ist TEXT, terminal_status TEXT
+        );
+        CREATE UNIQUE INDEX idx_runs_enrollment_key
+          ON workflow_runs(workflow_id, customer_id, enrollment_key)
+          WHERE enrollment_key IS NOT NULL;
+        CREATE TABLE wf_pending_actions (
+          id INTEGER PRIMARY KEY, run_id INTEGER, node_id TEXT,
+          attempt_count INTEGER, customer_id TEXT,
+          scheduled_at_ist TEXT, status TEXT, attempts INTEGER,
+          last_attempt_at_ist TEXT, last_error TEXT,
+          cohort_name TEXT, created_at_ist TEXT, fired_at_ist TEXT,
+          UNIQUE(run_id, node_id, attempt_count)
+        );
+        CREATE TABLE wf_decision_log (
+          id INTEGER PRIMARY KEY, ts_ist TEXT, comment_id TEXT,
+          customer_id TEXT, run_id INTEGER, node_id TEXT,
+          attempt_count INTEGER, disposition TEXT, sub_disposition TEXT,
+          action_class TEXT, comment_create_date TEXT, notes TEXT
+        );
+        CREATE TABLE workflow_node_log (
+          id INTEGER PRIMARY KEY, run_id INTEGER, ts_ist TEXT,
+          from_node_id TEXT, to_node_id TEXT, edge_label TEXT,
+          scratchpad_before TEXT, scratchpad_after TEXT,
+          side_effect TEXT, dry_run INTEGER DEFAULT 0
+        );
+        CREATE TABLE workflow_admin_log (
+          id INTEGER PRIMARY KEY, ts_ist TEXT, workflow_id INTEGER,
+          version_id INTEGER, actor TEXT, action TEXT, detail_json TEXT
+        );
+        CREATE TABLE wf_kill_switch (
+          id INTEGER PRIMARY KEY, ts_ist TEXT, action TEXT, reason TEXT, set_by TEXT
+        );
+        CREATE TABLE schema_version (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+        CREATE TABLE agent_assignments (
+          id INTEGER PRIMARY KEY, customer_id TEXT, reason TEXT,
+          source TEXT, assigned_at_ist TEXT, assigned_to TEXT,
+          resolved_at_ist TEXT, resolution_note TEXT, run_id INTEGER
+        );
+    """)
+    cn.commit()
+    cn.close()
+    return db
+
+
+@pytest.mark.parametrize("mode", [
+    "executor", "ingest", "alerts", "digest",
+])
+def test_dispatch_real_modules_no_typeerror(mode: str, tmp_path: Path,
+                                            monkeypatch) -> None:
+    """The contract regression test (Phase 9 master-auditor fix sketch).
+
+    Calls _dispatch with the REAL module + REAL run() callable (not a
+    monkeypatched stub) to catch:
+      - _MODE_REGISTRY pointing at a non-existent callable (P0-1).
+      - run() signature incompatible with the orchestrator's uniform
+        kwargs (P0-2).
+
+    Modes that need external resources (scheduler→CT, enrollment→CT) are
+    excluded; they're tested separately with mocks. The remaining 4 modes
+    can run end-to-end against an empty workflow.db.
+
+    For ingest: stub the Redshift fetcher (no network).
+    """
+    db = _setup_real_modules_db(tmp_path)
+
+    if mode == "ingest":
+        # Stub the Redshift fetcher so ingest has no network dependency.
+        import workflow.workflow_ingest as ingest_mod
+        monkeypatch.setattr(
+            ingest_mod, "_redshift_comment_fetcher",
+            lambda watermark, since: [],
+        )
+
+    extra = {"dry_run": True}
+    if mode == "executor":
+        extra["batch_limit"] = 10
+
+    rc = orch._dispatch(mode, db, extra)
+    assert rc == 0, (
+        f"mode={mode}: real-module dispatch failed with rc={rc}. "
+        f"This is the P0 contract — _MODE_REGISTRY and the daemon's "
+        f"run() signature MUST be compatible."
+    )
+
+    # Confirm started + ok heartbeats landed (no down).
+    agent_name = orch._MODE_REGISTRY[mode][0]
+    hb = _read_heartbeats(db, agent=agent_name)
+    statuses = [r["status"] for r in hb]
+    assert "started" in statuses, f"mode={mode}: missing 'started' heartbeat"
+    assert "ok" in statuses, (
+        f"mode={mode}: missing 'ok' heartbeat (got {statuses}). "
+        f"Likely a TypeError in the real run() call."
+    )
+    assert "down" not in statuses, (
+        f"mode={mode}: unexpected 'down' heartbeat. Heartbeat summary: "
+        f"{[r['summary'] for r in hb]}"
+    )

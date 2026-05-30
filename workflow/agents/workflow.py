@@ -265,6 +265,33 @@ def _append_node_log(
 # --------------------------------------------------------------------------
 
 
+def run(
+    *,
+    workflow_db_path: PathLike,
+    dry_run: bool = False,
+    batch_limit: int = TICK_BATCH_LIMIT,
+    **_ignored: object,
+) -> dict[str, object]:
+    """Module-level entrypoint used by Phase 9's workflow_orchestrator.
+
+    The orchestrator dispatches every daemon via a uniform ``run(**kwargs)``
+    contract (see ``workflow.workflow_orchestrator._MODE_REGISTRY``). The
+    executor's own work lives in ``WorkflowAgent.tick``; this wrapper bridges
+    the two surfaces and returns a JSON-serialisable dict (as_dict of
+    ``AgentResult``) for the heartbeat summary.
+
+    ``**_ignored`` is intentional — the orchestrator may thread other
+    daemons' kwargs (e.g. ``force``) through generic plumbing; we accept
+    and discard them rather than TypeError.
+    """
+    agent = WorkflowAgent(
+        workflow_db_path=workflow_db_path,
+        batch_limit=batch_limit,
+    )
+    result = agent.tick(dry_run=dry_run)
+    return asdict(result)
+
+
 class WorkflowAgent:
     """Executor for the workflow_runs state machine.
 
