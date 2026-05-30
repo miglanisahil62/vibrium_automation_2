@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sahil.workflow.enroll</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>workflow.workflow_orchestrator</string>
+        <string>--mode</string>
+        <string>enrollment</string>
+        <string>--workflow-db</string>
+        <string>/Users/sahil.m/vibrium-workflow/state/workflow.db</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/sahil.m/vibrium-workflow:/Users/sahil.m/vibrium-automation/scripts</string>
+        <key>HOME</key>
+        <string>/Users/sahil.m</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- CT creds for bulk_get_profiles candidate fetch. -->
+        <key>CT_CREDS_FILE</key>
+        <string>/Users/sahil.m/Collections_v3/Clevertap campaigns/config_CT_credentials.json</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sahil.m/vibrium-workflow</string>
+
+    <!-- 30 min cadence. Daemon guards with 08:00–18:00 IST (narrower than
+         RBI 19:00 — operator wants fewer late-day enrollments since the
+         customer may need calling immediately after enrolling). Daemon
+         also flock-protected (Phase 8 P1-1 fix) so two overlapping ticks
+         can't race past the daily cap. -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/enroll.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/enroll.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

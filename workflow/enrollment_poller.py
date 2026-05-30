@@ -48,14 +48,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
+import fcntl
 import json
 import logging
 import os
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Iterator, Optional, Union
 from zoneinfo import ZoneInfo
 
 from workflow.clevertap_profile import bulk_get_profiles
@@ -91,6 +94,14 @@ ENROLLMENT_WINDOW_END_HOUR = 18
 # clarity and to make it easy to tune from one place if a future workflow
 # fans out very wide.
 CT_BULK_CONCURRENCY = 5
+
+# Repo root — used to derive the default lock-file path. Two levels up from
+# this file (workflow/enrollment_poller.py → workflow/ → repo root).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Default lock-file path for the daily-cap race fix (Phase 8 P1-1). Operators
+# can override via the CLI `--lock-file` flag if state/ is somewhere else.
+DEFAULT_LOCK_FILE = _REPO_ROOT / "state" / "locks" / "enrollment_poller.lock"
 
 
 # ------------------------------------------------------------------- Helpers
@@ -131,6 +142,71 @@ def _is_callable_now():
 
 
 # ------------------------------------------------------------------ Kill switch
+
+
+# ------------------------------------------------------------------ File lock
+
+
+class LockContended(RuntimeError):
+    """Raised when another `enrollment_poller` instance holds the lock.
+
+    Distinct from generic OSError so the CLI can return a specific exit code
+    and so tests can assert on the contention path without ambiguity.
+    """
+
+
+@contextmanager
+def _acquire_lock(lock_path: PathLike) -> Iterator[int]:
+    """Non-blocking exclusive flock on a sidecar lock file.
+
+    Fixes Phase 8 P1-1: two overlapping ticks would each pre-count the daily
+    cap before the (slow) CT bulk fetch, race past the cap, and double-enrol.
+    With a process-level flock, the second tick exits cleanly with
+    ``LockContended`` instead of running.
+
+    Yields the open file descriptor so the caller can write a debug breadcrumb
+    if needed; releases the lock on context exit (flock is released on fd
+    close — we let the OS handle that path too).
+    """
+    p = Path(lock_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Open with O_CREAT so the lock file is auto-created on first run; we
+    # never truncate or unlink — the file is a sentinel, content is debug-only.
+    fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            # EWOULDBLOCK / EAGAIN → another instance holds the lock.
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise LockContended(
+                    f"enrollment_poller lock {p} held by another instance"
+                ) from exc
+            raise
+        # Best-effort breadcrumb: stamp pid + tick start so an operator
+        # tail-f'ing the file sees who's holding it.
+        try:
+            os.ftruncate(fd, 0)
+            os.write(
+                fd,
+                f"pid={os.getpid()} start={_now_ist_str()}\n".encode("utf-8"),
+            )
+        except OSError as exc:
+            # Breadcrumb is non-essential; never let it crash the daemon.
+            # Log + continue — operator can investigate disk/perm issues
+            # via the lock file path next time without losing the tick.
+            log.warning("enrollment_poller: lock breadcrumb write failed: %s", exc)
+        yield fd
+    finally:
+        # flock releases on close; explicit unlock for clarity.
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError as exc:
+            # Already-closed / never-held — non-fatal; the os.close below
+            # will release the lock unconditionally. Log so a recurring
+            # pattern surfaces on the launchd stderr.
+            log.warning("enrollment_poller: flock LOCK_UN failed: %s", exc)
+        os.close(fd)
 
 
 def _kill_switch_active(workflow_db_path: PathLike) -> bool:
@@ -438,7 +514,13 @@ def _format_enrollment_key(template: str, customer_id: str, now: datetime) -> st
 @dataclass
 class _Stats:
     killed: bool = False
-    outside_window: bool = False
+    # Phase 8 P1-2 fix: split the prior single `outside_window` bool into
+    # three distinct reasons so Phase 8.5 alerts / Phase 9 launchd-summary
+    # email can distinguish "symlink broken → operator must fix" from
+    # "evening run, expected idle".
+    outside_window: bool = False  # legacy aggregate (True if ANY of the below)
+    outside_rbi_window: bool = False  # gate.fire == False, RBI 08:00-19:00
+    outside_enrollment_window: bool = False  # hour >= 18 (narrower cap)
     workflows_seen: int = 0
     candidates_total: int = 0
     matched_total: int = 0
@@ -451,6 +533,8 @@ class _Stats:
         return {
             "killed": self.killed,
             "outside_window": self.outside_window,
+            "outside_rbi_window": self.outside_rbi_window,
+            "outside_enrollment_window": self.outside_enrollment_window,
             "workflows_seen": self.workflows_seen,
             "candidates_total": self.candidates_total,
             "matched_total": self.matched_total,
@@ -492,6 +576,7 @@ def run(
     force: bool = False,
     dry_run: bool = False,
     now: Optional[datetime] = None,
+    lock_file: Optional[PathLike] = None,
 ) -> dict[str, Any]:
     """Single enrollment-poller tick.
 
@@ -505,9 +590,46 @@ def run(
     `dry_run=True` does NOT insert; logs the would-be enrollments instead.
 
     `now` is a test seam — production callers pass None.
+
+    `lock_file` — Phase 8 P1-1 fix. Non-blocking flock around the body
+    prevents two overlapping ticks from racing past the daily-cap pre-count.
+    Defaults to ``state/locks/enrollment_poller.lock`` at repo root.
+    Pass ``False``-y / explicit "" to disable (tests only).
+
+    Raises:
+        LockContended: another instance holds the lock; CLI converts to
+            exit code 0 with a "another instance running" log so launchd
+            doesn't escalate this benign condition.
+        ImportError: the ``pre_call_gate`` symlink is broken / external
+            package missing. CLI converts to exit code 3 so launchd stderr
+            captures the ops failure and Phase 8.5 alerts can wake the
+            operator (the prior swallow-and-return-0 silently rotted).
     """
     stats = _Stats(dry_run=dry_run)
 
+    lock_path = (
+        Path(lock_file) if lock_file else DEFAULT_LOCK_FILE
+    )
+
+    with _acquire_lock(lock_path):
+        return _run_locked(
+            workflow_db_path=workflow_db_path,
+            force=force,
+            dry_run=dry_run,
+            now=now,
+            stats=stats,
+        )
+
+
+def _run_locked(
+    *,
+    workflow_db_path: PathLike,
+    force: bool,
+    dry_run: bool,
+    now: Optional[datetime],
+    stats: "_Stats",
+) -> dict[str, Any]:
+    """Body of `run()` invoked under the file lock. See `run()` for docs."""
     # Gate 1 — kill switch. Read using a short-lived connection so we don't
     # hold the workflow.db open while we make the (slow) CT HTTP calls.
     if _kill_switch_active(workflow_db_path):
@@ -515,12 +637,12 @@ def run(
         return stats.as_dict()
 
     # Gate 2 — RBI window + the narrower 18:00 enrollment cap.
-    try:
-        gate = _is_callable_now()
-    except ImportError as exc:
-        log.error("pre_call_gate symlink missing: %s", exc)
-        stats.outside_window = True
-        return stats.as_dict()
+    # Phase 8 P1-2 fix: ImportError is an ops failure (broken symlink) that
+    # MUST surface as a non-zero exit so launchd stderr / Phase 8.5 alerts
+    # catch it. Previously it was conflated with the legitimate
+    # "outside window" no-op. We now re-raise; the CLI converts it to
+    # exit code 3 and the function caller sees an unambiguous signal.
+    gate = _is_callable_now()
 
     n = now if now is not None else _now_ist()
     if n.tzinfo is not None and n.tzinfo != IST:
@@ -529,12 +651,21 @@ def run(
     # `gate.fire` is False outside 08:00-19:00. We additionally suppress
     # 18:00-19:00 specifically for enrollment (operator wants fewer late-day
     # bot calls). 19:00+ is already covered by gate.fire=False.
-    if not gate.fire or n.hour >= ENROLLMENT_WINDOW_END_HOUR:
+    if not gate.fire:
         log.info(
-            "outside enrollment window (gate.fire=%s, hour=%s): %s",
-            gate.fire, n.hour, getattr(gate, "reason", ""),
+            "outside RBI window (gate.fire=False, hour=%s): %s",
+            n.hour, getattr(gate, "reason", ""),
         )
         stats.outside_window = True
+        stats.outside_rbi_window = True
+        return stats.as_dict()
+    if n.hour >= ENROLLMENT_WINDOW_END_HOUR:
+        log.info(
+            "outside enrollment window (hour=%s >= %d, narrower than RBI 19:00)",
+            n.hour, ENROLLMENT_WINDOW_END_HOUR,
+        )
+        stats.outside_window = True
+        stats.outside_enrollment_window = True
         return stats.as_dict()
 
     # Gate 3 — load active workflows.
@@ -785,6 +916,14 @@ def _main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--lock-file",
+        default=None,
+        help=(
+            "Optional override for the flock sidecar path "
+            f"(default: {DEFAULT_LOCK_FILE})."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -801,7 +940,21 @@ def _main(argv: list[str] | None = None) -> int:
             workflow_db_path=args.workflow_db,
             force=args.force,
             dry_run=args.dry_run,
+            lock_file=args.lock_file,
         )
+    except LockContended as exc:
+        # Phase 8 P1-1 fix: a second concurrent tick is benign — log and
+        # exit 0 so launchd doesn't escalate (overlap window is small and
+        # the next tick at +30 min will catch up).
+        log.info("enrollment_poller: %s — exiting cleanly", exc)
+        return 0
+    except ImportError as exc:
+        # Phase 8 P1-2 fix: pre_call_gate symlink broken / external package
+        # missing. This is an ops failure that must surface — exit non-zero
+        # so launchd stderr captures it and Phase 8.5 detector A wakes
+        # the operator within 30 min via the missing-heartbeat path.
+        log.error("enrollment_poller: pre_call_gate import failed: %s", exc)
+        return 3
     except Exception as exc:  # noqa: BLE001 — CLI top-level
         log.exception("enrollment_poller crashed: %s", exc)
         return 1

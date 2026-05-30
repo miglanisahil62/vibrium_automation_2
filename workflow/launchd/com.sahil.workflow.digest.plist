@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sahil.workflow.digest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>workflow.workflow_orchestrator</string>
+        <string>--mode</string>
+        <string>digest</string>
+        <string>--workflow-db</string>
+        <string>/Users/sahil.m/vibrium-workflow/state/workflow.db</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/sahil.m/vibrium-workflow:/Users/sahil.m/vibrium-automation/scripts</string>
+        <key>HOME</key>
+        <string>/Users/sahil.m</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sahil.m/vibrium-workflow</string>
+
+    <!-- Daily at 09:01 IST. The :01 minute avoids the round :00 thundering-
+         herd against any other cron lined up at 09:00 (per the off-minute
+         rule). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>1</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/digest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/digest.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

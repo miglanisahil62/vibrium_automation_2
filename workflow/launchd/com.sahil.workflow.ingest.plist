@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sahil.workflow.ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>workflow.workflow_orchestrator</string>
+        <string>--mode</string>
+        <string>ingest</string>
+        <string>--workflow-db</string>
+        <string>/Users/sahil.m/vibrium-workflow/state/workflow.db</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/sahil.m/vibrium-workflow:/Users/sahil.m/vibrium-automation/scripts</string>
+        <key>HOME</key>
+        <string>/Users/sahil.m</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sahil.m/vibrium-workflow</string>
+
+    <!-- 15 min cadence, all day. Dispositions arrive whenever (CRM agent
+         hours overlap call window but not strictly). Ingest is read-only on
+         Redshift; safe to run after-hours. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/ingest.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

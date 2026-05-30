@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sahil.workflow.scheduler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>workflow.workflow_orchestrator</string>
+        <string>--mode</string>
+        <string>scheduler</string>
+        <string>--workflow-db</string>
+        <string>/Users/sahil.m/vibrium-workflow/state/workflow.db</string>
+        <string>--vibrium-db</string>
+        <string>/Users/sahil.m/vibrium-automation/state/vibrium.db</string>
+        <string>--ct-creds</string>
+        <string>/Users/sahil.m/Collections_v3/Clevertap campaigns/config_CT_credentials.json</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/sahil.m/vibrium-workflow:/Users/sahil.m/vibrium-automation/scripts</string>
+        <key>HOME</key>
+        <string>/Users/sahil.m</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Phase 3 flag — match the adhoc system's wrapper so the shared
+             cap reads consistently across both schedulers. -->
+        <key>USE_SHARED_AUDIT_CAP</key>
+        <string>true</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sahil.m/vibrium-workflow</string>
+
+    <!-- 5 min cadence. Daemon guards with pre_call_gate.is_callable_now() —
+         emits "skipped — outside window" heartbeat outside 08:00–19:00 IST
+         rather than silently no-op (operator-visible). -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/scheduler.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/scheduler.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

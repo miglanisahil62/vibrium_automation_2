@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sahil.workflow.alerts</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>workflow.workflow_orchestrator</string>
+        <string>--mode</string>
+        <string>alerts</string>
+        <string>--workflow-db</string>
+        <string>/Users/sahil.m/vibrium-workflow/state/workflow.db</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/sahil.m/vibrium-workflow:/Users/sahil.m/vibrium-automation/scripts</string>
+        <key>HOME</key>
+        <string>/Users/sahil.m</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sahil.m/vibrium-workflow</string>
+
+    <!-- 15 min cadence, all day. Alert detection is read-only on workflow.db;
+         payload-only (no SMTP). 60-min cooldown per alert condition prevents
+         spam. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/alerts.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahil.m/vibrium-workflow/state/logs/alerts.log</string>
+
+    <key>KeepAlive</key>
+    <false/>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
