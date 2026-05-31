@@ -94,19 +94,49 @@ def _insert_pending(
     run_id_start: int = 1,
     cohort_name: str = "test_cohort",
     scheduled_in_minutes: int = -5,
+    wf_shadow_mode: int = 0,
 ):
-    """Insert ``n`` PENDING rows with sequential customer/run IDs."""
+    """Insert ``n`` PENDING rows with sequential customer/run IDs.
+
+    Also seeds the parent workflow + version + workflow_runs chain so the
+    scheduler's claim JOIN (wf_pending_actions → workflow_runs → workflows)
+    resolves. ``wf_shadow_mode`` (default 0 = live) sets the workflow's DB
+    shadow latch — pass 1 to exercise the per-workflow shadow enforcement.
+    """
     conn = sqlite3.connect(str(wf_db_path))
     try:
+        now = _now_str()
+        # Parent workflow + version (idempotent across repeated calls).
+        conn.execute(
+            "INSERT OR IGNORE INTO workflows "
+            "(id, name, status, active_version_id, shadow_mode, created_at_ist, created_by) "
+            "VALUES (1, 'test_wf', 'ACTIVE', 1, ?, ?, 'test')",
+            (int(wf_shadow_mode), now),
+        )
+        # Keep shadow_mode current even if the workflow row already existed.
+        conn.execute("UPDATE workflows SET shadow_mode=? WHERE id=1", (int(wf_shadow_mode),))
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_versions "
+            "(id, workflow_id, version, graph_json, created_at_ist, created_by) "
+            "VALUES (1, 1, 1, '{}', ?, 'test')",
+            (now,),
+        )
         sched = (
             datetime.now(IST) + timedelta(minutes=scheduled_in_minutes)
         ).strftime("%Y-%m-%d %H:%M:%S")
-        now = _now_str()
+        run_rows = []
         rows = []
         for i in range(n):
             cid = customer_id_start + i
             rid = run_id_start + i
+            run_rows.append((rid, str(cid), now))
             rows.append((rid, "node_a", 1, str(cid), sched, "PENDING", cohort_name, now))
+        conn.executemany(
+            "INSERT OR IGNORE INTO workflow_runs "
+            "(id, workflow_id, version_id, customer_id, status, enrolled_at_ist) "
+            "VALUES (?, 1, 1, ?, 'ACTIVE', ?)",
+            run_rows,
+        )
         conn.executemany(
             """
             INSERT INTO wf_pending_actions
@@ -355,6 +385,32 @@ def test_shadow_mode_marks_shadow_fired_no_ct(dbs):
     r = _row(wf, row_id)
     assert r["status"] == "SHADOW_FIRED"
     assert r["fired_at_ist"] is not None  # triangulation join needs this
+
+
+def test_workflow_db_shadow_latch_forces_shadow_even_when_live(dbs):
+    # Scheduler runs LIVE (shadow_mode=False) but the workflow's own DB
+    # shadow_mode=1 must still force SHADOW_FIRED — the second, independent
+    # kill switch the runbook promises. No CT call, no audit.
+    wf, vb = dbs
+    [row_id] = _insert_pending(wf, n=1, wf_shadow_mode=1)
+    trigger = _ok_trigger()
+    audit = MagicMock()
+
+    stats = wfs.run(
+        workflow_db_path=wf,
+        vibrium_db_path=vb,
+        shadow_mode=False,          # scheduler is LIVE...
+        trigger_fn=trigger,
+        gate_check_fn=_ok_gate(),
+        is_callable_now_fn=_ok_window(),
+        record_fire_fn=audit,
+    )
+
+    assert stats["shadow_fired"] == 1   # ...but the workflow latch wins
+    assert stats["fired"] == 0
+    assert trigger.call_count == 0
+    assert audit.call_count == 0
+    assert _row(wf, row_id)["status"] == "SHADOW_FIRED"
 
 
 # --------------------------------------------------------------- 6. dry_run

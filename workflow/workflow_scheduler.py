@@ -76,6 +76,17 @@ log = logging.getLogger("workflow_scheduler")
 # so the call volume per tick is bounded.
 DEFAULT_BATCH_LIMIT = 100
 
+# VB pipeline throughput ceiling. The bot vendor can place ~700-800 calls/hour;
+# we cap at 750 to stay inside that envelope. Enforced as a rolling 60-minute
+# window: each tick may fire at most (HOURLY_CALL_CAP - fires_in_last_60min).
+# This both prevents over-driving the vendor AND keeps utilisation near 100%
+# (as long as demand exists, every hour fills to the cap). Overflow rows stay
+# PENDING and are naturally picked up in the next hour / next day.
+# Scope note: this counts THIS workflow's fires only (wf_pending_actions). If
+# adhoc Vibrium is calling concurrently, the combined vendor rate could exceed
+# the cap — a cross-system hourly cap is a documented follow-up.
+DEFAULT_HOURLY_CALL_CAP = 750
+
 # Cooldown between fires for a single customer (any source). Mirrors the adhoc
 # COOLDOWN_HOURS=3 — keeping them equal makes the Phase 7 time-bound
 # triangulation unambiguous (at most one fire per customer per 3h across
@@ -227,6 +238,27 @@ def _gate_check(
     return bool(result.fire), str(result.reason)
 
 
+# ------------------------------------------------------------- pacing
+
+
+def _shadow_fires_in_last_hour(conn: sqlite3.Connection, now_dt: datetime) -> int:
+    """Count this workflow's SHADOW_FIRED calls in the trailing 60 minutes.
+
+    Used ONLY in shadow_mode, where fires are not recorded to the cross-system
+    ``customer_call_audit`` (the live cap source). This lets a shadow run still
+    exercise the rolling-window pacing against its own SHADOW_FIRED rows.
+    ``fired_at_ist`` is naive IST ``YYYY-MM-DD HH:MM:SS`` (lexicographically
+    sortable), so a string ``>=`` comparison is a correct window filter.
+    """
+    cutoff = (now_dt - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM wf_pending_actions "
+        "WHERE status = 'SHADOW_FIRED' AND fired_at_ist >= ?",
+        (cutoff,),
+    ).fetchone()
+    return int(row["c"]) if row and row["c"] is not None else 0
+
+
 # ------------------------------------------------------------- claim + update
 
 
@@ -354,6 +386,7 @@ def run(
     shadow_mode: bool = False,
     dry_run: bool = False,
     batch_limit: int = DEFAULT_BATCH_LIMIT,
+    hourly_call_cap: int = DEFAULT_HOURLY_CALL_CAP,
     campaign_id: int = _DEFAULT_CAMPAIGN_ID,
     bot_id: str = _DEFAULT_BOT_ID,
     contact_type: str = _DEFAULT_CONTACT_TYPE,
@@ -405,24 +438,99 @@ def run(
             log.info("workflow_scheduler: outside RBI window — %s", window.reason)
             return stats
 
-        # --- 3. Claim batch of PENDING rows -------------------------------
+        # --- 3. Pacing: rolling 60-minute pipeline cap --------------------
+        # Keep utilisation near 100% without over-driving the vendor: each tick
+        # may fire at most (hourly_call_cap - fires_in_last_60min). When the cap
+        # is already met, fire nothing this tick; overflow rows stay PENDING and
+        # are picked up next hour / next day.
+        #
+        # Count source matters:
+        #   * live/dry-run  → customer_call_audit, BOTH sources (adhoc+workflow).
+        #     The vendor is shared, so the cap must reflect combined real load.
+        #   * shadow_mode   → wf_pending_actions SHADOW_FIRED (cca isn't written
+        #     in shadow), so a shadow run still self-paces against its own fires.
+        now_ist_dt = datetime.now(IST)
+        cutoff_str = (now_ist_dt - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        if shadow_mode:
+            fired_last_hour = _shadow_fires_in_last_hour(conn, now_ist_dt)
+        else:
+            fired_last_hour = cca.count_fires_since(
+                cutoff_str, vibrium_db_path=vibrium_db_path
+            )
+        headroom = max(0, int(hourly_call_cap) - fired_last_hour)
+        if headroom <= 0:
+            stats["status"] = "capacity_reached"
+            stats["fired_last_hour"] = fired_last_hour
+            _emit_heartbeat(
+                conn,
+                "ok",
+                {
+                    "reason": "hourly_cap_reached",
+                    "fired_last_hour": fired_last_hour,
+                    "hourly_call_cap": int(hourly_call_cap),
+                    **stats,
+                },
+            )
+            log.info(
+                "workflow_scheduler: hourly cap reached (%d/%d in last 60min) — "
+                "no fires this tick",
+                fired_last_hour,
+                int(hourly_call_cap),
+            )
+            return stats
+        effective_limit = min(int(batch_limit), headroom)
+
+        # --- 4. Claim batch of PENDING rows (priority-ordered) ------------
+        # Three-key ordering, designed so first-time calls lead WITHOUT
+        # permanently starving retries:
+        #   Key 1 — spillover-from-a-prior-day first. Any row scheduled before
+        #           today already missed its day; it gets top priority now. This
+        #           is the "if there's a spillover we call the very next day"
+        #           rule, and it bounds a Tier-2 retry's delay to ~1 day (it
+        #           cannot rot indefinitely under sustained Tier-1 load).
+        #   Key 2 — within the same day, Tier-1 (attempt_count = 0: first-ever
+        #           calls AND positive-disposition callbacks — PTP/Agree-EOD/
+        #           Callback/RTP re-fires never touch the COUNTER) before Tier-2
+        #           (attempt_count >= 1: RETRY re-dials of non-answerers).
+        #   Key 3 — oldest scheduled first within a key-1/key-2 bucket.
+        # (Edge case: a positive callback AFTER a prior RETRY carries
+        # attempt_count >= 1 and ranks as Tier-2 within its day — a small,
+        # acceptable population that already consumed a retry.)
         now_str = _now_ist_str()
+        today_str = now_ist_dt.strftime("%Y-%m-%d")
+        # JOIN the owning workflow's shadow_mode so firing honours a SECOND,
+        # independent shadow latch: a workflow held in shadow from the console
+        # (workflows.shadow_mode=1) is never fired live even when this scheduler
+        # process runs without --shadow. Effective shadow = CLI-shadow OR
+        # row-workflow-shadow (either gate → SHADOW_FIRED). All wf_pending_actions
+        # columns are pa.-prefixed because workflow_runs also has status/
+        # customer_id (ambiguous otherwise).
         rows = conn.execute(
             """
-            SELECT id, run_id, node_id, attempt_count, customer_id,
-                   scheduled_at_ist, status, cohort_name
-            FROM wf_pending_actions
-            WHERE status='PENDING'
-              AND scheduled_at_ist <= ?
-            ORDER BY scheduled_at_ist
+            SELECT pa.id, pa.run_id, pa.node_id, pa.attempt_count, pa.customer_id,
+                   pa.scheduled_at_ist, pa.status, pa.cohort_name,
+                   w.shadow_mode AS wf_shadow_mode
+            FROM wf_pending_actions pa
+            JOIN workflow_runs wr ON wr.id = pa.run_id
+            JOIN workflows w ON w.id = wr.workflow_id
+            WHERE pa.status='PENDING'
+              AND pa.scheduled_at_ist <= ?
+            ORDER BY
+                CASE WHEN substr(pa.scheduled_at_ist, 1, 10) < ? THEN 0 ELSE 1 END,
+                CASE WHEN pa.attempt_count = 0 THEN 0 ELSE 1 END,
+                pa.scheduled_at_ist
             LIMIT ?
             """,
-            (now_str, int(batch_limit)),
+            (now_str, today_str, effective_limit),
         ).fetchall()
 
         if not rows:
             _emit_heartbeat(conn, "ok", {"reason": "no_pending_rows", **stats})
             return stats
+
+        # Carry pacing context into the end-of-tick heartbeat for utilisation
+        # observability (not only on the capacity_reached path).
+        stats["fired_last_hour"] = fired_last_hour
 
         # Bulk pre-fetch last-fire timestamps for cooldown gate (one query
         # for the whole batch, not N).
@@ -430,7 +538,6 @@ def run(
         last_fire_lookup = cca.batch_last_fire_at(
             cids_int, vibrium_db_path=vibrium_db_path
         )
-        now_ist_dt = datetime.now(IST)
 
         # --- 4. Process each row ------------------------------------------
         for row in rows:
@@ -438,6 +545,9 @@ def run(
             cid = int(row["customer_id"])
             run_id = int(row["run_id"])
             cohort_name = row["cohort_name"]
+            # Either shadow latch (CLI flag OR the workflow's DB shadow_mode)
+            # forces SHADOW_FIRED — no live CT call.
+            effective_shadow = shadow_mode or bool(row["wf_shadow_mode"])
 
             # 4a. Atomic claim (race-safe vs concurrent ticks)
             if not _claim_row(conn, row_id):
@@ -507,8 +617,9 @@ def run(
                 stats["would_fire"] += 1
                 continue
 
-            # 4d. shadow_mode — mark SHADOW_FIRED with fired_at_ist, no CT/audit
-            if shadow_mode:
+            # 4d. shadow (CLI flag OR workflow DB shadow_mode) — mark
+            # SHADOW_FIRED with fired_at_ist, no CT call, no audit.
+            if effective_shadow:
                 _mark_status(
                     conn,
                     row_id,

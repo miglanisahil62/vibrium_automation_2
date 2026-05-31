@@ -44,6 +44,23 @@ from workflow.agents.workflow_handlers.types import NodeConfig, NodeResult, Run
 _ALLOWED_SCHEMA_TYPES: tuple = ("int", "float", "str", "bool")
 
 
+def _parse_schema_type(prop_type: str) -> tuple[str, bool]:
+    """Split a schema type into (base_type, optional).
+
+    A trailing ``?`` marks the property OPTIONAL: if it is absent from the CT
+    profile, the handler sets it to ``None`` in scratchpad instead of routing
+    to the ``error`` edge. This lets one FETCH_CT_PROPS node serve a graph
+    whose segments key on DIFFERENT properties (e.g. ``coll_bot_calling`` is
+    present for some segments, absent for a risk-rule segment) without every
+    customer missing one optional field being dropped as FETCH_FAILED.
+
+    Examples: ``"str"`` -> ("str", False); ``"str?"`` -> ("str", True).
+    """
+    if isinstance(prop_type, str) and prop_type.endswith("?"):
+        return prop_type[:-1], True
+    return prop_type, False
+
+
 def _coerce(value: Any, target_type: str) -> Any:
     """Coerce a single CT value to the declared schema type.
 
@@ -112,8 +129,10 @@ def execute(
         )
 
     # Validate all schema entries up front — fail before any HTTP call.
+    # A trailing '?' marks the property optional; validate the BASE type.
     for prop_name, prop_type in schema.items():
-        if prop_type not in _ALLOWED_SCHEMA_TYPES:
+        base_type, _optional = _parse_schema_type(prop_type)
+        if base_type not in _ALLOWED_SCHEMA_TYPES:
             return NodeResult(
                 next_edge="error",
                 scratchpad_patch={
@@ -149,7 +168,15 @@ def execute(
 
     patch: dict = {}
     for prop_name, prop_type in schema.items():
+        base_type, optional = _parse_schema_type(prop_type)
         if prop_name not in profile_data:
+            if optional:
+                # Absent optional property → None in scratchpad. Downstream
+                # CONDITION rules that reference it just won't match (e.g.
+                # `coll_bot_calling == 'X'` is False when it's None); this is
+                # how a segment NOT keyed on this property survives the fetch.
+                patch[prop_name] = None
+                continue
             return NodeResult(
                 next_edge="error",
                 scratchpad_patch={
@@ -163,7 +190,7 @@ def execute(
             )
         raw = profile_data[prop_name]
         try:
-            patch[prop_name] = _coerce(raw, prop_type)
+            patch[prop_name] = _coerce(raw, base_type)
         except (ValueError, TypeError) as exc:  # stashfin-lint: ignore  # documented contract: coercion failure routes to 'error' edge with property name in scratchpad; executor logs side_effect.
 
             return NodeResult(

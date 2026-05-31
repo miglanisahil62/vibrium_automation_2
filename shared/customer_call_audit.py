@@ -212,6 +212,33 @@ def batch_count_today(
     return out
 
 
+def count_fires_since(
+    cutoff_ist: str,
+    *,
+    vibrium_db_path: PathLike,
+) -> int:
+    """Count ALL VB calls fired at/after ``cutoff_ist`` across BOTH sources.
+
+    This is the cross-system rolling-window count: ``source='adhoc'`` and
+    ``source='workflow'`` rows are counted together, because both drive the
+    same bot vendor and a per-pipeline count would under-report the true
+    combined call rate.
+
+    ``cutoff_ist`` must be naive IST ``YYYY-MM-DD HH:MM:SS`` (the format every
+    ``fired_at_ist`` uses). String ``>=`` comparison is order-preserving on
+    that zero-padded format, so it is a correct time-window filter.
+    """
+    conn = _open(vibrium_db_path, write=False)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM customer_call_audit WHERE fired_at_ist >= ?",
+            (cutoff_ist,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return int(row["n"] or 0) if row else 0
+
+
 def batch_last_fire_at(
     customer_ids: list[int],
     *,

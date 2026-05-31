@@ -136,3 +136,71 @@ Then re-run the auditor; expected verdict PASS_WITH_NOTES (P1-2/P1-3/P1-4 remain
 | 4 | Frontend / UI QA (/stashfin-qa-ui) | N/A |
 
 Ship approval blocked on P0-1 and P0-2.
+
+---
+
+# Phase 9 Re-Audit — 2026-05-31 — commit 9982933
+
+## Verdict: PASS_WITH_NOTES
+
+## TL;DR
+Both P0s are closed and verified by a real-module contract test. `_MODE_REGISTRY["executor"]` now resolves to `workflow.agents.workflow.run` (the new module-level wrapper at `workflow/agents/workflow.py:268`); `workflow_ingest.run` now accepts `since` as kw-only Optional with a 24h default. The new parametric `test_dispatch_real_modules_no_typeerror` exercises 4 modes against REAL `run()` callables — it would have caught both P0s. Full suite: 219 passed (up from 215, +4 contract tests as claimed). The 3 prior P1s remain open (none addressed in this commit) and are noted below.
+
+## P0 Issues — Must Fix Before Merge
+None. Both prior P0s closed and verified.
+
+### P0-1 (prior) — CLOSED
+- **File:** `workflow/workflow_orchestrator.py:53` + `workflow/agents/workflow.py:268-292`
+- **Verification:** `_MODE_REGISTRY["executor"] == ("workflow_executor", "workflow.agents.workflow", "run")`. Module-level `run(*, workflow_db_path, dry_run=False, batch_limit=100, **_ignored)` exists at line 268, wraps `WorkflowAgent.tick()`, returns `asdict(AgentResult)`. Orphaned `_run_executor_mode` helper removed (grep confirms zero matches). Contract test executor case asserts `rc == 0` + started + ok + no down.
+
+### P0-2 (prior) — CLOSED
+- **File:** `workflow/workflow_ingest.py:522-560`
+- **Verification:** Signature is `run(workflow_db_path, *, since=None, dry_run=False, comment_fetcher=None, **_ignored)`. Default `since = now - 24h` applied at line 560 when None. `dry_run` accepted and discarded with documented inertness. `**_ignored` absorbs orchestrator extras. CLI at line 643-646 still passes `since=args.since` as kwarg — compatible. Contract test ingest case PASS.
+
+## P1 Issues — Should Fix (all carried over from prior audit, none addressed)
+
+### P1-1 — `_Stats.outside_window` aggregate redundancy
+- **Status:** OPEN. No change in this commit.
+- **Recommendation:** Convert to `@property` summing per-detector counters; non-blocking.
+
+### P1-2 — Digest shadow-run query uses `last_attempt_at_ist` (NULL-risk)
+- **File:** `workflow/workflow_digest.py:134` — `WHERE status='SHADOW_FIRED' AND last_attempt_at_ist >= ?`
+- **Status:** OPEN. The prior recommendation to switch to `fired_at_ist` was not applied. Shadow rows with NULL `last_attempt_at_ist` (which is the canonical state for shadow-fired rows that never get a real retry) will be silently excluded from the daily digest count.
+- **Recommendation:** Switch to `fired_at_ist >= ?` — the column reliably stamped at shadow-fire time.
+
+### P1-3 — Orchestrator heartbeat always `ok` regardless of daemon return status
+- **File:** `workflow/workflow_orchestrator.py:130-132`
+- **Status:** OPEN. `_dispatch` stamps `status='ok'` after any clean return, ignoring `result["status"]` (e.g., the executor's `"paused"`, future `outside_window` / `killed`). Phase 8.5 alert detectors that key on heartbeat `status` field will misclassify these states.
+- **Recommendation:** When the daemon returns a dict with a `status` key in `{"paused","outside_window","killed"}`, pass it through to the heartbeat row instead of overwriting with `"ok"`. Keep `"ok"` for the default/`"ok"` return.
+
+## P2 Issues — Nice to Fix
+- **P2-1 (carried):** Docstring drift in `_dispatch` re: exit codes (mentions code 3 for ImportError; matches reality — OK on re-read, withdraw).
+- **P2-2 (new):** `workflow.agents.workflow.run` returns `asdict(AgentResult)` whose `status` field is `"ok"` / `"paused"` — surfaces directly into the orchestrator heartbeat summary `result` dict, which P1-3 silently flattens. Once P1-3 is fixed, this becomes the canonical path. No action needed standalone.
+
+## Contract Test Quality — VERIFIED LEGITIMATE
+- `test_dispatch_real_modules_no_typeerror` at `workflow/tests/test_orchestrator.py:317` is parametric across `["executor","ingest","alerts","digest"]`.
+- It calls `orch._dispatch(mode, db, extra)` — the real production code path, no monkeypatching of `_dispatch` or `_MODE_REGISTRY`.
+- Only stub: `_redshift_comment_fetcher` for the ingest case (necessary — no network in test). Everything else is the real `importlib.import_module` → `getattr(module, "run")` → real call.
+- Asserts: `rc == 0`, `"started" in statuses`, `"ok" in statuses`, `"down" not in statuses`.
+- This test would have failed loudly on both prior P0s. Not mutilated.
+
+## What I Did Not Audit
+- Did not exercise `scheduler` or `enrollment` modes against real CT — correctly excluded from the contract test (external resource dep). Their `run()` signatures are not re-verified here.
+- Did not run launchd plist end-to-end.
+
+## KB Updates Applied
+None — the fix pattern (module-level `run(**_ignored)` wrapper bridging a class-based agent to a uniform orchestrator dispatch contract) is already well-covered in `auditor_kb/system-design-patterns.md` §"retry/idempotency contracts".
+
+## Recommendations
+Ship-clear for Phase 9 dispatcher. Open P1-2 (digest `fired_at_ist`) and P1-3 (heartbeat status passthrough) in a follow-up — they're operational-visibility bugs, not correctness ones.
+
+## Release Gate Status
+
+| # | Gate | Status |
+|---|------|--------|
+| 1 | Static code review (master-auditor) | **PASS_WITH_NOTES** — this report |
+| 2 | API / backend QA (/stashfin-qa-backend) | PENDING |
+| 3 | Console wiring | N/A — daemon-only deliverable |
+| 4 | Frontend / UI QA (/stashfin-qa-ui) | N/A |
+
+Ship approval requires gate 2 to return PASS or PASS_WITH_NOTES.

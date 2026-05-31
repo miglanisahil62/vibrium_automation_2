@@ -64,7 +64,7 @@ except ImportError:  # pragma: no cover
 # canonical source is the handler ``execute()`` return values.
 REQUIRED_EDGES: dict[str, set[str]] = {
     # Phase 4a
-    "ENROLL": {"success"},
+    "ENROLL": {"next"},
     "FETCH_CT_PROPS": {"success", "error"},
     "CONDITION": {"true", "false"},
     "FIRE_VB_CALL": {"queued"},
@@ -72,12 +72,12 @@ REQUIRED_EDGES: dict[str, set[str]] = {
     "TERMINATE": set(),  # terminal
     # Phase 4b
     "SWITCH": set(),  # SWITCH validates its own edges dynamically (see below)
-    "WAIT_UNTIL": {"ready"},
+    "WAIT_UNTIL": {"next"},
     "BRANCH_ON_DISPOSITION": {"default", "error"},
-    "COUNTER": {"under", "over"},
+    "COUNTER": {"under_limit", "at_limit"},
     # Phase 4c
     "SET_CT_PROP": {"success", "error"},
-    "ASSIGN_AGENT": {"success"},
+    "ASSIGN_AGENT": {"next"},
 }
 
 # Node types that count as terminal for cycle-detection / required-edge skips.

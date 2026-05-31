@@ -1,0 +1,47 @@
+# vibrium-workflow crontab — AWS Ubuntu server (system TZ = UTC).
+# IST = UTC + 5:30. Times below are UTC; the IST equivalent is in the comment.
+# Install with:  crontab deploy/crontab.txt   (review first: crontab -l)
+#
+# Daemon safety: the scheduler runs in SHADOW mode by default (no real CT
+# fires) because run.sh defaults WF_SHADOW=1. Going live = export WF_SHADOW=0
+# (e.g. in secrets/ops.env) AND flip the workflow row's shadow_mode in console.
+#
+# Every job goes through a run.sh / run_fetch.sh wrapper that emits a heartbeat
+# (wf_fetch_dpd1 / wf_<mode>) and writes a failure marker on non-zero exit.
+
+BASE=/home/ubuntu/vibrium-workflow
+
+# ── 1. Daily candidate fetch (collection_view ageing=1 → dated CSV) ──────────
+# 07:30 IST primary
+0  2 * * *  $BASE/run_fetch.sh           >> $BASE/logs/cron.log 2>&1
+# 08:15 IST fallback — only writes if today's CSV is still missing
+45 2 * * *  $BASE/run_fetch.sh fallback  >> $BASE/logs/cron.log 2>&1
+
+# ── 2. Enrollment poller (creates parked runs from the CSV) ──────────────────
+# 07:35 IST prep run (WF_ENROLLMENT_PREP_START_HOUR=7 set in run.sh) +
+# catch-up runs through the morning (idempotent: dedupe by enrollment_key/day).
+5  2 * * *  $BASE/run.sh enrollment      >> $BASE/logs/cron.log 2>&1   # 07:35 IST
+0  3 * * *  $BASE/run.sh enrollment      >> $BASE/logs/cron.log 2>&1   # 08:30 IST
+30 4 * * *  $BASE/run.sh enrollment      >> $BASE/logs/cron.log 2>&1   # 10:00 IST
+30 6 * * *  $BASE/run.sh enrollment      >> $BASE/logs/cron.log 2>&1   # 12:00 IST
+
+# ── 3. Executor / tick loop (advance runs node→node) ─────────────────────────
+# Every 5 min, 07:30–20:25 IST. Safe to run pre-08:00 (only advances state,
+# never calls). Parks WAIT_UNTIL runs so the same-day cohort is ready at 08:00.
+*/5 2-14 * * *  $BASE/run.sh executor     >> $BASE/logs/cron.log 2>&1
+
+# ── 4. Scheduler / firer (fires queued calls; shadow by default) ─────────────
+# Every 5 min, 07:30–19:25 IST. The scheduler self-gates the RBI 08:00–19:00
+# window + 750/hr cap + 3/day per-customer cap, so the off-window ticks no-op.
+*/5 2-13 * * *  $BASE/run.sh scheduler    >> $BASE/logs/cron.log 2>&1
+
+# ── 5. Ingest (pull dispositions, wake AWAIT runs) ───────────────────────────
+# Every 15 min, 07:30–20:15 IST (catches end-of-day dispositions).
+*/15 2-14 * * *  $BASE/run.sh ingest      >> $BASE/logs/cron.log 2>&1
+
+# ── 6. Alerts watchdog (missing-heartbeat detector) ──────────────────────────
+*/30 2-15 * * *  $BASE/run.sh alerts      >> $BASE/logs/cron.log 2>&1
+
+# ── 7. Daily digest email ────────────────────────────────────────────────────
+# 19:30 IST = 14:00 UTC
+0 14 * * *  $BASE/run.sh digest           >> $BASE/logs/cron.log 2>&1

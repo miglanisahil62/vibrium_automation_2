@@ -237,6 +237,55 @@ class TestFetchCtProps:
         assert result.next_edge == "error"
         assert result.scratchpad_patch["coercion_failed_property"] == "coll_bot_calling"
 
+    def test_optional_property_absent_sets_none_not_error(
+        self, monkeypatch, base_run: Run,
+    ):
+        # coll_bot_calling marked optional ('str?') and absent from profile →
+        # success, value None (so a segment NOT keyed on it survives the fetch).
+        monkeypatch.setattr(
+            ctp, "get_profile",
+            lambda cid: {"profileData": {"dpd": 5, "coll_collection_risk_segmentation": 3}},
+        )
+        node = _node("FETCH_CT_PROPS", {
+            "properties": {
+                "dpd": "int",
+                "coll_collection_risk_segmentation": "int?",
+                "coll_bot_calling": "str?",
+            },
+        })
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert result.scratchpad_patch["dpd"] == 5
+        assert result.scratchpad_patch["coll_collection_risk_segmentation"] == 3
+        assert result.scratchpad_patch["coll_bot_calling"] is None
+
+    def test_optional_property_present_is_coerced(self, monkeypatch, base_run: Run):
+        # Present optional prop coerces using the base type (the '?' is stripped).
+        monkeypatch.setattr(
+            ctp, "get_profile",
+            lambda cid: {"profileData": {"dpd": 5, "coll_bot_calling": "ai_vb_calling_highv1"}},
+        )
+        node = _node("FETCH_CT_PROPS", {
+            "properties": {"dpd": "int", "coll_bot_calling": "str?"},
+        })
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert result.scratchpad_patch["coll_bot_calling"] == "ai_vb_calling_highv1"
+
+    def test_required_property_still_errors_when_absent(
+        self, monkeypatch, base_run: Run,
+    ):
+        # A required (no '?') prop that is absent must still route to error.
+        monkeypatch.setattr(
+            ctp, "get_profile", lambda cid: {"profileData": {"coll_bot_calling": "x"}},
+        )
+        node = _node("FETCH_CT_PROPS", {
+            "properties": {"dpd": "int", "coll_bot_calling": "str?"},
+        })
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert result.scratchpad_patch["coercion_failed_property"] == "dpd"
+
 
 # --------------------------------------------------------------------------
 # CONDITION

@@ -90,6 +90,24 @@ PER_WORKFLOW_HARD_ABORT = 5000
 # 19:00 RBI calling window).
 ENROLLMENT_WINDOW_END_HOUR = 18
 
+# Hour the RBI calling window opens (08:00 IST). Used only to bound the
+# enrollment "prep window" below — the canonical calling gate stays
+# pre_call_gate.is_callable_now().
+RBI_CALL_START_HOUR = 8
+
+# Enrollment may begin BEFORE the 08:00 calling window opens, in a pre-window
+# "prep slot" [ENROLLMENT_PREP_START_HOUR, 08:00). Why this is safe — the exact
+# invariant: enrollment writes only ``workflow_runs`` rows (status='ACTIVE' at
+# the ENROLL node). A call can only fire from a ``wf_pending_actions`` row, and
+# none exists until the executor advances the run through the graph. Even then,
+# the scheduler independently gates every fire on ``is_callable_now()`` (08:00
+# RBI window) + a per-customer ``pre_call_gate.check()``. So enrolling at 07:xx
+# cannot produce a pre-08:00 call — it just front-loads run creation + the
+# CleverTap profile fetch so the same-day (T+0) cohort is ready the instant the
+# window opens. Default 8 == no prep window (legacy behaviour: enrollment starts
+# with the RBI window). Set env WF_ENROLLMENT_PREP_START_HOUR=7 to enable 07:00.
+ENROLLMENT_PREP_START_HOUR = int(os.environ.get("WF_ENROLLMENT_PREP_START_HOUR", "8"))
+
 # CT bulk-fetch concurrency. Phase 2 module defaults to 5; we pin it here for
 # clarity and to make it easy to tune from one place if a future workflow
 # fans out very wide.
@@ -648,17 +666,27 @@ def _run_locked(
     if n.tzinfo is not None and n.tzinfo != IST:
         n = n.astimezone(IST)
 
-    # `gate.fire` is False outside 08:00-19:00. We additionally suppress
-    # 18:00-19:00 specifically for enrollment (operator wants fewer late-day
-    # bot calls). 19:00+ is already covered by gate.fire=False.
-    if not gate.fire:
+    # `gate.fire` is False outside 08:00-19:00. Enrollment is additionally
+    # allowed in a pre-window prep slot [ENROLLMENT_PREP_START_HOUR, 08:00) so
+    # the morning fetch -> CT -> tick chain finishes before the calling window
+    # opens. No call can fire in that slot — the scheduler enforces the 08:00
+    # gate independently. We still suppress 18:00+ for enrollment below.
+    prep_ok = ENROLLMENT_PREP_START_HOUR <= n.hour < RBI_CALL_START_HOUR
+    if not gate.fire and not prep_ok:
         log.info(
-            "outside RBI window (gate.fire=False, hour=%s): %s",
-            n.hour, getattr(gate, "reason", ""),
+            "outside enrollment window (gate.fire=False, hour=%s, prep_start=%s): %s",
+            n.hour, ENROLLMENT_PREP_START_HOUR, getattr(gate, "reason", ""),
         )
         stats.outside_window = True
         stats.outside_rbi_window = True
         return stats.as_dict()
+    if prep_ok and not gate.fire:
+        log.info(
+            "enrollment prep window active (hour=%s, prep_start=%s) — creating "
+            "parked runs ahead of the 08:00 calling window; scheduler still "
+            "gates all firing.",
+            n.hour, ENROLLMENT_PREP_START_HOUR,
+        )
     if n.hour >= ENROLLMENT_WINDOW_END_HOUR:
         log.info(
             "outside enrollment window (hour=%s >= %d, narrower than RBI 19:00)",
@@ -710,6 +738,23 @@ def _run_locked(
                 wf.id,
             )
             continue
+        # Expand path tokens so the ENROLL config stays portable Mac↔AWS:
+        #   {csv_dir}      → WF_ENROLLMENT_CSV_DIR env (default <repo>/state/
+        #                    enrollment) — same default the fetch script writes to.
+        #   {YYYY-MM-DD}   → today IST. Resolving against TODAY means a failed/late
+        #                    upstream fetch leaves today's file ABSENT, so
+        #                    _load_candidates raises FileNotFoundError and we skip
+        #                    loudly rather than re-enrolling a stale cohort.
+        csv_dir = os.environ.get(
+            "WF_ENROLLMENT_CSV_DIR", str(_REPO_ROOT / "state" / "enrollment")
+        )
+        date_str = n.strftime("%Y-%m-%d")
+        source_csv = (
+            str(source_csv)
+            .replace("{csv_dir}", csv_dir)
+            .replace("{YYYY-MM-DD}", date_str)
+            .replace("{date}", date_str)
+        )
         try:
             cids = _load_candidates(source_csv)
         except (FileNotFoundError, ValueError) as exc:

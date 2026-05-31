@@ -26,7 +26,7 @@ def _enroll(node_id: str, success: str) -> dict:
         "type": "ENROLL",
         "label": "enroll",
         "config": {},
-        "edges": {"success": success},
+        "edges": {"next": success},
     }
 
 
@@ -76,7 +76,7 @@ def _wait_until(node_id: str, ready: str) -> dict:
         "type": "WAIT_UNTIL",
         "label": "wait",
         "config": {"hours": 1},
-        "edges": {"ready": ready},
+        "edges": {"next": ready},
     }
 
 

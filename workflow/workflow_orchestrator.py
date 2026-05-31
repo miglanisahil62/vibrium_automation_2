@@ -180,6 +180,9 @@ def _main(argv: list[str] | None = None) -> int:
                         help="Enrollment-only: bypass the >5000 hard-abort.")
     parser.add_argument("--batch-limit", type=int, default=100,
                         help="Executor-only: TICK_BATCH_LIMIT.")
+    parser.add_argument("--hourly-call-cap", type=int, default=750,
+                        help="Scheduler-only: max VB calls fired per rolling "
+                             "60min (vendor throughput ceiling; default 750).")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
@@ -199,6 +202,7 @@ def _main(argv: list[str] | None = None) -> int:
         extra["vibrium_db_path"] = args.vibrium_db
         extra["ct_creds_path"] = args.ct_creds
         extra["shadow_mode"] = args.shadow
+        extra["hourly_call_cap"] = args.hourly_call_cap
     elif args.mode == "enrollment":
         extra["force"] = args.force
     elif args.mode == "executor":

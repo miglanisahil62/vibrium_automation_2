@@ -20,3 +20,6 @@ config.json
 external/vibrium_automation_scripts
 external/*/
 !external/__init__.py
+
+# Runtime secrets (redshift.env, ops.env) — never commit
+secrets/
