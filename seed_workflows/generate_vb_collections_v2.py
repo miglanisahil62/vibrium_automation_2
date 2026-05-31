@@ -106,7 +106,7 @@ SEGMENTS: list[dict] = [
         "name": "mid_nowa_1",
         "match": "coll_bot_calling == 'ai_vb_calling_mid_v2'",
         "total_calls": 2,
-        "entry_offset_days": 1,
+        "entry_offset_days": 0,   # T+0 per VB_Prompt_Doc (1): "day they fulfil"
         "entry_time": "08:00",
     },
     {
@@ -121,6 +121,27 @@ SEGMENTS: list[dict] = [
         "match": "coll_bot_calling == 'ai_vb_calling_mid_v4'",
         "total_calls": 1,
         "entry_offset_days": 0,
+        "entry_time": "08:00",
+    },
+    {
+        "name": "low_wa",
+        "match": "coll_bot_calling == 'ai_vb_calling_lowv1'",
+        "total_calls": 3,
+        "entry_offset_days": 1,   # T+1
+        "entry_time": "08:00",
+    },
+    {
+        "name": "low_nowa_1",
+        "match": "coll_bot_calling == 'ai_vb_calling_lowv2'",
+        "total_calls": 3,
+        "entry_offset_days": 0,   # T+0
+        "entry_time": "08:00",
+    },
+    {
+        "name": "low_nowa_2",
+        "match": "coll_bot_calling == 'ai_vb_calling_lowv3'",
+        "total_calls": 4,         # first 4-call segment
+        "entry_offset_days": 0,   # T+0
         "entry_time": "08:00",
     },
     {

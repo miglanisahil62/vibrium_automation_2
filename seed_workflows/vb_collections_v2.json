@@ -545,9 +545,9 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000022",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_1 \u2014 Entry Wait (T+1 day at 08:00)",
+      "label": "mid_nowa_1 \u2014 Entry Wait (T+0 day at 08:00)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "relative": "T+0 day at 08:00"
       },
       "edges": {
         "next": "a2000000-0000-4000-a000-000000000001",
@@ -1181,22 +1181,22 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000015",
       "type": "CONDITION",
-      "label": "Classify: high_nowa?",
+      "label": "Classify: low_wa?",
       "config": {
-        "expr": "coll_collection_risk_segmentation != None and coll_collection_risk_segmentation < 5 and coll_notification_replied == 'WA_Unavailable'"
+        "expr": "coll_bot_calling == 'ai_vb_calling_lowv1'"
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000025",
-        "false": "00000000-0000-4000-a000-000000000006",
-        "error": "00000000-0000-4000-a000-000000000006"
+        "false": "00000000-0000-4000-a000-000000000016",
+        "error": "00000000-0000-4000-a000-000000000016"
       }
     },
     {
       "node_id": "00000000-0000-4000-a000-000000000025",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "low_wa \u2014 Entry Wait (T+1 day at 08:00)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "relative": "T+1 day at 08:00"
       },
       "edges": {
         "next": "a5000000-0000-4000-a000-000000000001",
@@ -1206,7 +1206,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000001",
       "type": "FIRE_VB_CALL",
-      "label": "high_nowa: Fire VB Call",
+      "label": "low_wa: Fire VB Call",
       "config": {},
       "edges": {
         "queued": "a5000000-0000-4000-a000-000000000002",
@@ -1216,7 +1216,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000002",
       "type": "AWAIT_DISPOSITION",
-      "label": "high_nowa: Await Disposition",
+      "label": "low_wa: Await Disposition",
       "config": {
         "timeout_hours": 24
       },
@@ -1228,7 +1228,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000003",
       "type": "BRANCH_ON_DISPOSITION",
-      "label": "high_nowa: Branch on Disposition",
+      "label": "low_wa: Branch on Disposition",
       "config": {
         "cases": {
           "NOOP": "paid",
@@ -1257,7 +1257,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000004",
       "type": "TERMINATE",
-      "label": "high_nowa: Terminate \u2014 Paid",
+      "label": "low_wa: Terminate \u2014 Paid",
       "config": {
         "status": "PAID"
       },
@@ -1266,7 +1266,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000005",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa: Wait \u2014 PTP date",
+      "label": "low_wa: Wait \u2014 PTP date",
       "config": {
         "relative": "T+3 day at 08:00"
       },
@@ -1278,7 +1278,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000006",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa: Wait \u2014 EOD call",
+      "label": "low_wa: Wait \u2014 EOD call",
       "config": {
         "relative": "T+0 day at 18:00"
       },
@@ -1290,7 +1290,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000007",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa: Wait \u2014 Callback",
+      "label": "low_wa: Wait \u2014 Callback",
       "config": {
         "relative": "T+1 day at 08:00"
       },
@@ -1302,7 +1302,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000008",
       "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 Escalation",
+      "label": "low_wa: Assign \u2014 Escalation",
       "config": {
         "reason": "dispute_or_nrp"
       },
@@ -1314,10 +1314,10 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "high_nowa: Retry Counter (max 2 calls)",
+      "label": "low_wa: Retry Counter (max 3 calls)",
       "config": {
         "name": "attempts",
-        "limit": 2
+        "limit": 3
       },
       "edges": {
         "under_limit": "a5000000-0000-4000-a000-00000000000a",
@@ -1328,7 +1328,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa: Wait \u2014 Retry T+1",
+      "label": "low_wa: Wait \u2014 Retry T+1",
       "config": {
         "relative": "T+1 day at 08:00"
       },
@@ -1340,7 +1340,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000b",
       "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 Max Attempts",
+      "label": "low_wa: Assign \u2014 Max Attempts",
       "config": {
         "reason": "max_attempts_reached"
       },
@@ -1352,7 +1352,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000c",
       "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 RTP Review",
+      "label": "low_wa: Assign \u2014 RTP Review",
       "config": {
         "reason": "rtp_needs_review"
       },
@@ -1364,7 +1364,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000d",
       "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 Unhandled Disposition",
+      "label": "low_wa: Assign \u2014 Unhandled Disposition",
       "config": {
         "reason": "unhandled_disposition"
       },
@@ -1376,7 +1376,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000e",
       "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 Disposition Timeout",
+      "label": "low_wa: Assign \u2014 Disposition Timeout",
       "config": {
         "reason": "disposition_timeout_24h"
       },
@@ -1388,7 +1388,7 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000f",
       "type": "TERMINATE",
-      "label": "high_nowa: Terminate \u2014 Assigned to Agent",
+      "label": "low_wa: Terminate \u2014 Assigned to Agent",
       "config": {
         "status": "ASSIGNED_TO_AGENT"
       },
@@ -1396,6 +1396,681 @@
     },
     {
       "node_id": "a5000000-0000-4000-a000-000000000010",
+      "type": "TERMINATE",
+      "label": "low_wa: Terminate \u2014 Gate Suppressed",
+      "config": {
+        "status": "GATE_SUPPRESSED"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000016",
+      "type": "CONDITION",
+      "label": "Classify: low_nowa_1?",
+      "config": {
+        "expr": "coll_bot_calling == 'ai_vb_calling_lowv2'"
+      },
+      "edges": {
+        "true": "00000000-0000-4000-a000-000000000026",
+        "false": "00000000-0000-4000-a000-000000000017",
+        "error": "00000000-0000-4000-a000-000000000017"
+      }
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000026",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1 \u2014 Entry Wait (T+0 day at 08:00)",
+      "config": {
+        "relative": "T+0 day at 08:00"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "00000000-0000-4000-a000-000000000007"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000001",
+      "type": "FIRE_VB_CALL",
+      "label": "low_nowa_1: Fire VB Call",
+      "config": {},
+      "edges": {
+        "queued": "a6000000-0000-4000-a000-000000000002",
+        "suppressed": "a6000000-0000-4000-a000-000000000010"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000002",
+      "type": "AWAIT_DISPOSITION",
+      "label": "low_nowa_1: Await Disposition",
+      "config": {
+        "timeout_hours": 24
+      },
+      "edges": {
+        "disposition": "a6000000-0000-4000-a000-000000000003",
+        "timeout": "a6000000-0000-4000-a000-00000000000e"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000003",
+      "type": "BRANCH_ON_DISPOSITION",
+      "label": "low_nowa_1: Branch on Disposition",
+      "config": {
+        "cases": {
+          "NOOP": "paid",
+          "PTP_CALL": "ptp",
+          "AGREE_EOD_CALL": "eod",
+          "CALLBACK_CALL": "callback",
+          "ESCALATE": "escalate",
+          "RETRY": "retry",
+          "RTP_NEEDS_LLM": "rtp"
+        },
+        "default": "default_assign"
+      },
+      "edges": {
+        "paid": "a6000000-0000-4000-a000-000000000004",
+        "ptp": "a6000000-0000-4000-a000-000000000005",
+        "eod": "a6000000-0000-4000-a000-000000000006",
+        "callback": "a6000000-0000-4000-a000-000000000007",
+        "escalate": "a6000000-0000-4000-a000-000000000008",
+        "retry": "a6000000-0000-4000-a000-000000000009",
+        "rtp": "a6000000-0000-4000-a000-00000000000c",
+        "default_assign": "a6000000-0000-4000-a000-00000000000d",
+        "default": "a6000000-0000-4000-a000-00000000000d",
+        "error": "a6000000-0000-4000-a000-00000000000d"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000004",
+      "type": "TERMINATE",
+      "label": "low_nowa_1: Terminate \u2014 Paid",
+      "config": {
+        "status": "PAID"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000005",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1: Wait \u2014 PTP date",
+      "config": {
+        "relative": "T+3 day at 08:00"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "a6000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000006",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1: Wait \u2014 EOD call",
+      "config": {
+        "relative": "T+0 day at 18:00"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "a6000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000007",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1: Wait \u2014 Callback",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "a6000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000008",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_1: Assign \u2014 Escalation",
+      "config": {
+        "reason": "dispute_or_nrp"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-00000000000f",
+        "error": "a6000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000009",
+      "type": "COUNTER",
+      "label": "low_nowa_1: Retry Counter (max 3 calls)",
+      "config": {
+        "name": "attempts",
+        "limit": 3
+      },
+      "edges": {
+        "under_limit": "a6000000-0000-4000-a000-00000000000a",
+        "at_limit": "a6000000-0000-4000-a000-00000000000b",
+        "error": "a6000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000a",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1: Wait \u2014 Retry T+1",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "a6000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000b",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_1: Assign \u2014 Max Attempts",
+      "config": {
+        "reason": "max_attempts_reached"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-00000000000f",
+        "error": "a6000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000c",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_1: Assign \u2014 RTP Review",
+      "config": {
+        "reason": "rtp_needs_review"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-00000000000f",
+        "error": "a6000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000d",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_1: Assign \u2014 Unhandled Disposition",
+      "config": {
+        "reason": "unhandled_disposition"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-00000000000f",
+        "error": "a6000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000e",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_1: Assign \u2014 Disposition Timeout",
+      "config": {
+        "reason": "disposition_timeout_24h"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-00000000000f",
+        "error": "a6000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-00000000000f",
+      "type": "TERMINATE",
+      "label": "low_nowa_1: Terminate \u2014 Assigned to Agent",
+      "config": {
+        "status": "ASSIGNED_TO_AGENT"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000010",
+      "type": "TERMINATE",
+      "label": "low_nowa_1: Terminate \u2014 Gate Suppressed",
+      "config": {
+        "status": "GATE_SUPPRESSED"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000017",
+      "type": "CONDITION",
+      "label": "Classify: low_nowa_2?",
+      "config": {
+        "expr": "coll_bot_calling == 'ai_vb_calling_lowv3'"
+      },
+      "edges": {
+        "true": "00000000-0000-4000-a000-000000000027",
+        "false": "00000000-0000-4000-a000-000000000018",
+        "error": "00000000-0000-4000-a000-000000000018"
+      }
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000027",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2 \u2014 Entry Wait (T+0 day at 08:00)",
+      "config": {
+        "relative": "T+0 day at 08:00"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "00000000-0000-4000-a000-000000000007"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000001",
+      "type": "FIRE_VB_CALL",
+      "label": "low_nowa_2: Fire VB Call",
+      "config": {},
+      "edges": {
+        "queued": "a7000000-0000-4000-a000-000000000002",
+        "suppressed": "a7000000-0000-4000-a000-000000000010"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000002",
+      "type": "AWAIT_DISPOSITION",
+      "label": "low_nowa_2: Await Disposition",
+      "config": {
+        "timeout_hours": 24
+      },
+      "edges": {
+        "disposition": "a7000000-0000-4000-a000-000000000003",
+        "timeout": "a7000000-0000-4000-a000-00000000000e"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000003",
+      "type": "BRANCH_ON_DISPOSITION",
+      "label": "low_nowa_2: Branch on Disposition",
+      "config": {
+        "cases": {
+          "NOOP": "paid",
+          "PTP_CALL": "ptp",
+          "AGREE_EOD_CALL": "eod",
+          "CALLBACK_CALL": "callback",
+          "ESCALATE": "escalate",
+          "RETRY": "retry",
+          "RTP_NEEDS_LLM": "rtp"
+        },
+        "default": "default_assign"
+      },
+      "edges": {
+        "paid": "a7000000-0000-4000-a000-000000000004",
+        "ptp": "a7000000-0000-4000-a000-000000000005",
+        "eod": "a7000000-0000-4000-a000-000000000006",
+        "callback": "a7000000-0000-4000-a000-000000000007",
+        "escalate": "a7000000-0000-4000-a000-000000000008",
+        "retry": "a7000000-0000-4000-a000-000000000009",
+        "rtp": "a7000000-0000-4000-a000-00000000000c",
+        "default_assign": "a7000000-0000-4000-a000-00000000000d",
+        "default": "a7000000-0000-4000-a000-00000000000d",
+        "error": "a7000000-0000-4000-a000-00000000000d"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000004",
+      "type": "TERMINATE",
+      "label": "low_nowa_2: Terminate \u2014 Paid",
+      "config": {
+        "status": "PAID"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000005",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2: Wait \u2014 PTP date",
+      "config": {
+        "relative": "T+3 day at 08:00"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "a7000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000006",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2: Wait \u2014 EOD call",
+      "config": {
+        "relative": "T+0 day at 18:00"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "a7000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000007",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2: Wait \u2014 Callback",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "a7000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000008",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_2: Assign \u2014 Escalation",
+      "config": {
+        "reason": "dispute_or_nrp"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-00000000000f",
+        "error": "a7000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000009",
+      "type": "COUNTER",
+      "label": "low_nowa_2: Retry Counter (max 4 calls)",
+      "config": {
+        "name": "attempts",
+        "limit": 4
+      },
+      "edges": {
+        "under_limit": "a7000000-0000-4000-a000-00000000000a",
+        "at_limit": "a7000000-0000-4000-a000-00000000000b",
+        "error": "a7000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000a",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2: Wait \u2014 Retry T+1",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "a7000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000b",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_2: Assign \u2014 Max Attempts",
+      "config": {
+        "reason": "max_attempts_reached"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-00000000000f",
+        "error": "a7000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000c",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_2: Assign \u2014 RTP Review",
+      "config": {
+        "reason": "rtp_needs_review"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-00000000000f",
+        "error": "a7000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000d",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_2: Assign \u2014 Unhandled Disposition",
+      "config": {
+        "reason": "unhandled_disposition"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-00000000000f",
+        "error": "a7000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000e",
+      "type": "ASSIGN_AGENT",
+      "label": "low_nowa_2: Assign \u2014 Disposition Timeout",
+      "config": {
+        "reason": "disposition_timeout_24h"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-00000000000f",
+        "error": "a7000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-00000000000f",
+      "type": "TERMINATE",
+      "label": "low_nowa_2: Terminate \u2014 Assigned to Agent",
+      "config": {
+        "status": "ASSIGNED_TO_AGENT"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000010",
+      "type": "TERMINATE",
+      "label": "low_nowa_2: Terminate \u2014 Gate Suppressed",
+      "config": {
+        "status": "GATE_SUPPRESSED"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000018",
+      "type": "CONDITION",
+      "label": "Classify: high_nowa?",
+      "config": {
+        "expr": "coll_collection_risk_segmentation != None and coll_collection_risk_segmentation < 5 and coll_notification_replied == 'WA_Unavailable'"
+      },
+      "edges": {
+        "true": "00000000-0000-4000-a000-000000000028",
+        "false": "00000000-0000-4000-a000-000000000006",
+        "error": "00000000-0000-4000-a000-000000000006"
+      }
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000028",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa \u2014 Entry Wait (T+0 day at 08:00)",
+      "config": {
+        "relative": "T+0 day at 08:00"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "00000000-0000-4000-a000-000000000007"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000001",
+      "type": "FIRE_VB_CALL",
+      "label": "high_nowa: Fire VB Call",
+      "config": {},
+      "edges": {
+        "queued": "a8000000-0000-4000-a000-000000000002",
+        "suppressed": "a8000000-0000-4000-a000-000000000010"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000002",
+      "type": "AWAIT_DISPOSITION",
+      "label": "high_nowa: Await Disposition",
+      "config": {
+        "timeout_hours": 24
+      },
+      "edges": {
+        "disposition": "a8000000-0000-4000-a000-000000000003",
+        "timeout": "a8000000-0000-4000-a000-00000000000e"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000003",
+      "type": "BRANCH_ON_DISPOSITION",
+      "label": "high_nowa: Branch on Disposition",
+      "config": {
+        "cases": {
+          "NOOP": "paid",
+          "PTP_CALL": "ptp",
+          "AGREE_EOD_CALL": "eod",
+          "CALLBACK_CALL": "callback",
+          "ESCALATE": "escalate",
+          "RETRY": "retry",
+          "RTP_NEEDS_LLM": "rtp"
+        },
+        "default": "default_assign"
+      },
+      "edges": {
+        "paid": "a8000000-0000-4000-a000-000000000004",
+        "ptp": "a8000000-0000-4000-a000-000000000005",
+        "eod": "a8000000-0000-4000-a000-000000000006",
+        "callback": "a8000000-0000-4000-a000-000000000007",
+        "escalate": "a8000000-0000-4000-a000-000000000008",
+        "retry": "a8000000-0000-4000-a000-000000000009",
+        "rtp": "a8000000-0000-4000-a000-00000000000c",
+        "default_assign": "a8000000-0000-4000-a000-00000000000d",
+        "default": "a8000000-0000-4000-a000-00000000000d",
+        "error": "a8000000-0000-4000-a000-00000000000d"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000004",
+      "type": "TERMINATE",
+      "label": "high_nowa: Terminate \u2014 Paid",
+      "config": {
+        "status": "PAID"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000005",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa: Wait \u2014 PTP date",
+      "config": {
+        "relative": "T+3 day at 08:00"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "a8000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000006",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa: Wait \u2014 EOD call",
+      "config": {
+        "relative": "T+0 day at 18:00"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "a8000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000007",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa: Wait \u2014 Callback",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "a8000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000008",
+      "type": "ASSIGN_AGENT",
+      "label": "high_nowa: Assign \u2014 Escalation",
+      "config": {
+        "reason": "dispute_or_nrp"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-00000000000f",
+        "error": "a8000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000009",
+      "type": "COUNTER",
+      "label": "high_nowa: Retry Counter (max 2 calls)",
+      "config": {
+        "name": "attempts",
+        "limit": 2
+      },
+      "edges": {
+        "under_limit": "a8000000-0000-4000-a000-00000000000a",
+        "at_limit": "a8000000-0000-4000-a000-00000000000b",
+        "error": "a8000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000a",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa: Wait \u2014 Retry T+1",
+      "config": {
+        "relative": "T+1 day at 08:00"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "a8000000-0000-4000-a000-00000000000b"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000b",
+      "type": "ASSIGN_AGENT",
+      "label": "high_nowa: Assign \u2014 Max Attempts",
+      "config": {
+        "reason": "max_attempts_reached"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-00000000000f",
+        "error": "a8000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000c",
+      "type": "ASSIGN_AGENT",
+      "label": "high_nowa: Assign \u2014 RTP Review",
+      "config": {
+        "reason": "rtp_needs_review"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-00000000000f",
+        "error": "a8000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000d",
+      "type": "ASSIGN_AGENT",
+      "label": "high_nowa: Assign \u2014 Unhandled Disposition",
+      "config": {
+        "reason": "unhandled_disposition"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-00000000000f",
+        "error": "a8000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000e",
+      "type": "ASSIGN_AGENT",
+      "label": "high_nowa: Assign \u2014 Disposition Timeout",
+      "config": {
+        "reason": "disposition_timeout_24h"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-00000000000f",
+        "error": "a8000000-0000-4000-a000-00000000000f"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-00000000000f",
+      "type": "TERMINATE",
+      "label": "high_nowa: Terminate \u2014 Assigned to Agent",
+      "config": {
+        "status": "ASSIGNED_TO_AGENT"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000010",
       "type": "TERMINATE",
       "label": "high_nowa: Terminate \u2014 Gate Suppressed",
       "config": {
