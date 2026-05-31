@@ -9,21 +9,19 @@ fetches each customer's CleverTap profile, applies the entry condition, and
 creates parked workflow runs so the same-day cohort is ready when the 08:00
 calling window opens.
 
-Failure mode that matters: if this script does not run (or returns zero rows),
-NO customers enter the workflow today and zero calls fire. We guard that two
-ways: (1) the output is DATE-STAMPED, so a failed run cannot leave a stale
-file that the poller would mistake for today's cohort — a missing file makes
-the poller fail loud; (2) a zero-row result exits non-zero (unless
-``--allow-empty``) so the run.sh heartbeat reports 'down', the 08:15/09:00
-fallback retry fires, and the alerts daemon emails. DPD-1 is a large daily
-cohort; zero rows almost always means a query/connection failure, not an empty
-bucket.
+Empty days are EXPECTED: ``ageing == 1`` is a thin one-day slice, and on many
+days no customer is exactly one day past due (the cohort populates as customers
+cross the boundary). So a successful query returning 0 rows is a normal empty
+day, NOT a failure — we write a header-only CSV and exit 0 (the poller reads it
+and enrols nobody). The failure signal is reserved for a genuine
+query/connection error, which raises an exception → exit 1 → 'down' heartbeat +
+alert. The output is also DATE-STAMPED so a failed run cannot leave a stale file
+that the poller would mistake for today's cohort.
 
 CLI:
     python3 fetch_dpd1_candidates.py                 # full production run
     python3 fetch_dpd1_candidates.py --dry-run       # query + log count; no file
     python3 fetch_dpd1_candidates.py --limit 100     # smoke test, capped cohort
-    python3 fetch_dpd1_candidates.py --allow-empty   # write even on 0 rows
 
 Cron entry (example — AWS server is UTC; 07:30 IST = 02:00 UTC):
     # 07:30 IST primary
@@ -88,9 +86,6 @@ def parse_args() -> argparse.Namespace:
                     help="Run the query and log the row count; write no file.")
     ap.add_argument("--limit", type=int, default=None,
                     help="Cap the cohort to N customers (smoke test only; N >= 1).")
-    ap.add_argument("--allow-empty", action="store_true",
-                    help="Write the CSV and exit 0 even if the query returns 0 "
-                         "rows. Default: 0 rows is treated as a failure.")
     ap.add_argument("--date", default=None,
                     help="Override the cohort date (YYYY-MM-DD); default today IST.")
     args = ap.parse_args()
@@ -195,17 +190,17 @@ def do_work(args: argparse.Namespace) -> dict:
     log.info("collection_view returned %d distinct ageing=%d customer_ids",
              n, _TARGET_AGEING)
 
-    if n == 0 and not args.allow_empty:
-        # Do NOT write an empty file — leaving today's dated file absent makes
-        # the poller fail loud and lets the fallback retry + alerts catch it.
-        log.error(
-            "ZERO candidates for ageing=%d — treating as a fetch FAILURE "
-            "(likely query/connection issue, not a genuinely empty bucket). "
-            "No file written; exiting non-zero so the fallback retry + alert "
-            "fire. Pass --allow-empty to override.",
-            _TARGET_AGEING,
-        )
-        raise RuntimeError("zero DPD-1 candidates — refusing to write empty cohort")
+    # 0 rows is NORMAL for ageing == 1: on many days no customer is exactly one
+    # day past due — the DPD-1 slice populates as customers cross the boundary.
+    # A genuine query/connection FAILURE raises an exception (caught in main →
+    # exit 1 → 'down' heartbeat + alert) and never reaches here; so a
+    # successful query that returns 0 rows is a real empty day, not a failure.
+    # We write the header-only CSV (so the enrollment poller reads it cleanly
+    # and enrolls nobody, rather than erroring on a missing file) and exit 0
+    # (no false alert). Distinction: exception = failure; 0 rows = empty day.
+    if n == 0:
+        log.info("0 DPD-1 candidates today (ageing=%d) — normal; writing empty cohort",
+                 _TARGET_AGEING)
 
     if args.dry_run:
         log.info("--dry-run set; not writing %s (%d rows planned)", out_path, n)

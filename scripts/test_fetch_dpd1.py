@@ -1,8 +1,9 @@
 """Tests for scripts/fetch_dpd1_candidates.py.
 
 No live Redshift — `_fetch_candidates` is monkeypatched. Covers id
-normalisation, the zero-rows-is-failure contract, --allow-empty, atomic-write
-cleanup, and CLI validation of --date / --limit.
+normalisation, the zero-rows-is-a-normal-empty-day contract (writes a
+header-only CSV, exits 0), atomic-write cleanup, and CLI validation of
+--date / --limit.
 """
 from __future__ import annotations
 
@@ -48,28 +49,22 @@ def test_normalize_limit_zero_is_ignored():
 
 
 def _args(**kw):
-    base = dict(dry_run=False, limit=None, allow_empty=False, date="2026-05-30")
+    base = dict(dry_run=False, limit=None, date="2026-05-30")
     base.update(kw)
     return argparse.Namespace(**base)
 
 
-def test_zero_rows_raises_without_allow_empty(monkeypatch, tmp_path):
+def test_zero_rows_writes_empty_cohort_and_exits_ok(monkeypatch, tmp_path):
+    # 0 rows from a SUCCESSFUL query is a normal empty day for ageing=1 — write
+    # a header-only CSV and return cleanly (no raise, no alert). A real
+    # query/connection failure raises inside _fetch_candidates → main() exit 1.
     monkeypatch.setattr(fd, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(fd, "_fetch_candidates", lambda limit: [])
-    with pytest.raises(RuntimeError):
-        fd.do_work(_args())
-    # No file written.
-    assert list(tmp_path.glob("*.csv")) == []
-
-
-def test_allow_empty_writes_header_only(monkeypatch, tmp_path):
-    monkeypatch.setattr(fd, "OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr(fd, "_fetch_candidates", lambda limit: [])
-    summary = fd.do_work(_args(allow_empty=True))
+    summary = fd.do_work(_args())
     assert summary["n_written"] == 0
     out = tmp_path / "dpd1_candidates_2026-05-30.csv"
     assert out.exists()
-    assert out.read_text().strip() == "customer_id"
+    assert out.read_text().strip() == "customer_id"  # header only, no rows
 
 
 def test_happy_path_writes_dated_csv(monkeypatch, tmp_path):
