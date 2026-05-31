@@ -63,10 +63,13 @@ def main() -> None:
         ).fetchone()
         print(f"[OK] {now} — LIVE: {dict(after)}")
         print("[OK] Calls will fire from the next 08:00–19:00 IST window.")
-        audit = _REPO / "state" / "go_live_audit.log"
-        audit.parent.mkdir(parents=True, exist_ok=True)
-        with open(audit, "a") as f:
-            f.write(f"{now} — shadow_mode flipped to LIVE: {dict(after)}\n")
+        try:
+            audit = _REPO / "state" / "go_live_audit.log"
+            audit.parent.mkdir(parents=True, exist_ok=True)
+            with open(audit, "a") as f:
+                f.write(f"{now} — shadow_mode flipped to LIVE: {dict(after)}\n")
+        except OSError as exc:
+            print(f"[WARN] audit log write failed (flip already committed): {exc}", file=sys.stderr)
     finally:
         if conn is not None:
             conn.close()
