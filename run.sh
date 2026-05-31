@@ -46,14 +46,18 @@ done
 SHADOW_FLAG="--shadow"
 [[ "${WF_SHADOW:-1}" == "0" ]] && SHADOW_FLAG=""
 
-# Per-mode timeout + orchestrator flags.
-FLAGS=""
+# Per-mode timeout + orchestrator flags. FLAGS is an ARRAY so paths containing
+# spaces (e.g. the CT creds live under ".../Clevertap campaigns/...") survive as
+# single argv elements — a plain string would word-split on the space and break
+# argparse.
+FLAGS=()
 case "${MODE}" in
     executor)
-        TIMEOUT_SEC=900;  FLAGS="--batch-limit 200" ;;
+        TIMEOUT_SEC=900;  FLAGS=(--batch-limit 200) ;;
     scheduler)
         TIMEOUT_SEC=1500
-        FLAGS="--vibrium-db ${VIBRIUM_DB} --ct-creds ${CT_CREDS} --hourly-call-cap ${HOURLY_CALL_CAP} ${SHADOW_FLAG}" ;;
+        FLAGS=(--vibrium-db "${VIBRIUM_DB}" --ct-creds "${CT_CREDS}" --hourly-call-cap "${HOURLY_CALL_CAP}")
+        [[ -n "${SHADOW_FLAG}" ]] && FLAGS+=("${SHADOW_FLAG}") ;;
     ingest)
         TIMEOUT_SEC=1500 ;;
     enrollment)
@@ -71,10 +75,11 @@ case "${MODE}" in
 esac
 
 echo "===== $(date '+%F %T %Z') — starting wf ${MODE} (timeout=${TIMEOUT_SEC}s, shadow=${SHADOW_FLAG:-off}) =====" >> "${LOG_FILE}"
-# shellcheck disable=SC2086  # FLAGS is intentionally word-split into argv
+# ${FLAGS[@]+...} is the set -u-safe empty-array expansion (modes like ingest
+# pass no extra flags); plain "${FLAGS[@]}" can trip "unbound" on bash < 4.4.
 timeout --kill-after=30 "${TIMEOUT_SEC}" \
     python3 -m workflow.workflow_orchestrator \
-        --mode "${MODE}" --workflow-db "${WORKFLOW_DB}" ${FLAGS} \
+        --mode "${MODE}" --workflow-db "${WORKFLOW_DB}" ${FLAGS[@]+"${FLAGS[@]}"} \
         >> "${LOG_FILE}" 2>&1
 RC=$?
 if [[ "${RC}" -eq 124 ]]; then
