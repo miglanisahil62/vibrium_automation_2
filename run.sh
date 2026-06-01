@@ -71,17 +71,19 @@ case "${MODE}" in
         TIMEOUT_SEC=600 ;;
     agent_assignment_emailer)
         TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
+    enrollment_funnel_emailer)
+        TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
     *)
-        echo "unknown mode '${MODE}' (executor|scheduler|ingest|enrollment|alerts|digest|agent_assignment_emailer)" >&2
+        echo "unknown mode '${MODE}' (executor|scheduler|ingest|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer)" >&2
         exit 2 ;;
 esac
 
 echo "===== $(date '+%F %T %Z') — starting wf ${MODE} (timeout=${TIMEOUT_SEC}s, shadow=${SHADOW_FLAG:-off}) =====" >> "${LOG_FILE}"
 
 # agent_assignment_emailer is a standalone script — not an orchestrator mode.
-if [[ "${MODE}" == "agent_assignment_emailer" ]]; then
+if [[ "${MODE}" == "agent_assignment_emailer" || "${MODE}" == "enrollment_funnel_emailer" ]]; then
     timeout --kill-after=30 "${TIMEOUT_SEC}" \
-        python3 "${BASE_DIR}/scripts/agent_assignment_emailer.py" \
+        python3 "${BASE_DIR}/scripts/${MODE}.py" \
             --workflow-db "${WORKFLOW_DB}" \
             >> "${LOG_FILE}" 2>&1
 else
