@@ -69,18 +69,29 @@ case "${MODE}" in
         TIMEOUT_SEC=300 ;;
     digest)
         TIMEOUT_SEC=600 ;;
+    agent_assignment_emailer)
+        TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
     *)
-        echo "unknown mode '${MODE}' (executor|scheduler|ingest|enrollment|alerts|digest)" >&2
+        echo "unknown mode '${MODE}' (executor|scheduler|ingest|enrollment|alerts|digest|agent_assignment_emailer)" >&2
         exit 2 ;;
 esac
 
 echo "===== $(date '+%F %T %Z') — starting wf ${MODE} (timeout=${TIMEOUT_SEC}s, shadow=${SHADOW_FLAG:-off}) =====" >> "${LOG_FILE}"
-# ${FLAGS[@]+...} is the set -u-safe empty-array expansion (modes like ingest
-# pass no extra flags); plain "${FLAGS[@]}" can trip "unbound" on bash < 4.4.
-timeout --kill-after=30 "${TIMEOUT_SEC}" \
-    python3 -m workflow.workflow_orchestrator \
-        --mode "${MODE}" --workflow-db "${WORKFLOW_DB}" ${FLAGS[@]+"${FLAGS[@]}"} \
-        >> "${LOG_FILE}" 2>&1
+
+# agent_assignment_emailer is a standalone script — not an orchestrator mode.
+if [[ "${MODE}" == "agent_assignment_emailer" ]]; then
+    timeout --kill-after=30 "${TIMEOUT_SEC}" \
+        python3 "${BASE_DIR}/scripts/agent_assignment_emailer.py" \
+            --workflow-db "${WORKFLOW_DB}" \
+            >> "${LOG_FILE}" 2>&1
+else
+    # ${FLAGS[@]+...} is the set -u-safe empty-array expansion (modes like ingest
+    # pass no extra flags); plain "${FLAGS[@]}" can trip "unbound" on bash < 4.4.
+    timeout --kill-after=30 "${TIMEOUT_SEC}" \
+        python3 -m workflow.workflow_orchestrator \
+            --mode "${MODE}" --workflow-db "${WORKFLOW_DB}" ${FLAGS[@]+"${FLAGS[@]}"} \
+            >> "${LOG_FILE}" 2>&1
+fi
 RC=$?
 if [[ "${RC}" -eq 124 ]]; then
     echo "===== TIMEOUT after ${TIMEOUT_SEC}s — process killed =====" >> "${LOG_FILE}"

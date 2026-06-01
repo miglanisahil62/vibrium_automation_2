@@ -45,3 +45,7 @@ BASE=/home/ubuntu/vibrium-workflow
 # ── 7. Daily digest email ────────────────────────────────────────────────────
 # 19:30 IST = 14:00 UTC
 0 14 * * *  $BASE/run.sh digest           >> $BASE/logs/cron.log 2>&1
+
+# ── 8. Agent assignment emailer (every 2h during call window) ─────────────────
+# 08:00 IST = 02:30 UTC, every 2h: 02:30 / 04:30 / 06:30 / 08:30 / 10:30 / 12:30 UTC
+30 2,4,6,8,10,12 * * *  $BASE/run.sh agent_assignment_emailer  >> $BASE/logs/cron.log 2>&1
