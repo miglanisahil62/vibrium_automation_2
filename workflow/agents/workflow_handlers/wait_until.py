@@ -169,20 +169,29 @@ def execute(
         )
 
     ready_at = target.strftime(_IST_TS_FMT)
-    run.status = "WAITING"
-    run.ready_at_ist = ready_at
-
-    # Late wakeup: still record; the executor's ``ready_at_ist <= now`` filter
-    # picks it up on the next tick. We tag the side effect for the audit log.
     late = target <= now
-    side = (
-        f"WAIT_UNTIL parked until {ready_at}"
-        + (" (late — fires next tick)" if late else "")
-    )
 
+    if not late:
+        # Deadline is in the future — park the run.
+        run.status = "WAITING"
+        run.ready_at_ist = ready_at
+        side = f"WAIT_UNTIL parked until {ready_at}"
+        return NodeResult(
+            next_edge="next",
+            scratchpad_patch={},
+            side_effect=side,
+            ready_at_ist=ready_at,
+        )
+
+    # Deadline already passed — advance immediately. Do NOT set run.status
+    # here; the executor's persist path checks run.status to decide park vs
+    # advance. Leaving it ACTIVE causes the executor to follow next_edge and
+    # advance to the next node. Setting WAITING would cause an infinite
+    # re-park loop (handler called again next tick, re-parks again, forever).
+    side = f"WAIT_UNTIL deadline {ready_at} already passed — advancing immediately"
     return NodeResult(
         next_edge="next",
         scratchpad_patch={},
         side_effect=side,
-        ready_at_ist=ready_at,
+        ready_at_ist=None,
     )
