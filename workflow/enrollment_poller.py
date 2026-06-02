@@ -925,7 +925,8 @@ def _find_enroll_node_id(conn, version_id: int) -> Optional[str]:
         if not isinstance(n, dict):
             continue
         if str(n.get("type", "")).upper() == "ENROLL":
-            nid = n.get("id")
+            # Generator writes "node_id"; older graphs used "id" — accept both.
+            nid = n.get("node_id") or n.get("id")
             if nid is not None:
                 return str(nid)
     return None

@@ -1,4 +1,4 @@
-simpleeval==0.9.13
+simpleeval>=1.0.0  # 0.9.13 uses ast.Num removed in Python 3.12+; server runs 3.14
 requests==2.32.4
 python-dateutil==2.9.0
 pytest==8.3.5
