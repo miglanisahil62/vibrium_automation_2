@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import logging
 import re
@@ -324,7 +325,7 @@ def _build_html(f: dict) -> str:
     if oos_detail:
         detail_rows = "".join(
             f"<tr>"
-            f"<td style='padding:4px 8px;font-family:monospace'>{val}</td>"
+            f"<td style='padding:4px 8px;font-family:monospace'>{html.escape(str(val))}</td>"
             f"<td style='padding:4px 8px;text-align:center'>{cnt}</td>"
             f"</tr>"
             for val, cnt in sorted(oos_detail.items(), key=lambda x: -x[1])
