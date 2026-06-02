@@ -73,7 +73,7 @@ def _connect(path: PathLike, *, read_only: bool) -> sqlite3.Connection:
     # parent for vibrium.db — that's owned by another system and silently
     # creating an empty file there could hide a config typo.
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
+    conn = sqlite3.connect(str(p), timeout=10)
     conn.row_factory = sqlite3.Row
     _apply_pragmas(conn, read_only=read_only)
     return conn
