@@ -844,18 +844,17 @@ class TestWaitUntil:
         assert result.next_edge == "error"
         assert result.scratchpad_patch["wait_error"] == "invalid_date_format"
 
-    def test_late_wakeup_records_ready_at_in_past(self, base_run: Run):
-        # Absolute date in the past — ready_at_ist is still set; executor's
-        # filter handles immediate-fire.
+    def test_late_wakeup_advances_immediately(self, base_run: Run):
+        # Deadline in the past — handler must set run.status='ACTIVE' and return
+        # ready_at_ist=None so _persist_run_advance takes the advance path,
+        # not the park path. The old behaviour (re-park) caused an infinite loop.
         base_run.scratchpad = {"target_date": "2020-01-01"}
         node = _node("WAIT_UNTIL", {"absolute": "target_date"})
         result = wait_mod.execute(node, base_run, ctx=None, txn=None)
         assert result.next_edge == "next"
-        assert result.ready_at_ist == "2020-01-01 00:00:00"
-        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
-        now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
-        assert parsed < now
-        assert "late" in (result.side_effect or "").lower()
+        assert result.ready_at_ist is None       # no park deadline on late path
+        assert base_run.status == "ACTIVE"       # executor will advance, not park
+        assert "already passed" in (result.side_effect or "").lower()
 
 
 # --------------------------------------------------------------------------

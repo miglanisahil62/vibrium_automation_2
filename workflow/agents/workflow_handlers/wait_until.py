@@ -183,11 +183,13 @@ def execute(
             ready_at_ist=ready_at,
         )
 
-    # Deadline already passed — advance immediately. Do NOT set run.status
-    # here; the executor's persist path checks run.status to decide park vs
-    # advance. Leaving it ACTIVE causes the executor to follow next_edge and
-    # advance to the next node. Setting WAITING would cause an infinite
-    # re-park loop (handler called again next tick, re-parks again, forever).
+    # Deadline already passed — advance immediately.
+    # The run was loaded from DB as status='WAITING'; _persist_run_advance
+    # branches on run.status: WAITING=park, ACTIVE=advance. We MUST explicitly
+    # set ACTIVE here so the executor follows next_edge to FIRE_VB_CALL.
+    # Not setting it (leaving WAITING from the load) would re-park every tick.
+    run.status = "ACTIVE"
+    run.ready_at_ist = None
     side = f"WAIT_UNTIL deadline {ready_at} already passed — advancing immediately"
     return NodeResult(
         next_edge="next",
