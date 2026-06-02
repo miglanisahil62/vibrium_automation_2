@@ -92,14 +92,14 @@ SEGMENTS: list[dict] = [
         "name": "high_wa",
         "match": "coll_bot_calling == 'ai_vb_calling_highv1'",
         "total_calls": 2,
-        "entry_offset_days": 1,   # T+1 — day AFTER criteria met
+        "entry_offset_days": 0,   # T+0 — same day
         "entry_time": "08:00",
     },
     {
         "name": "mid_wa",
         "match": "coll_bot_calling == 'ai_vb_calling_midv1'",
         "total_calls": 2,
-        "entry_offset_days": 1,
+        "entry_offset_days": 0,
         "entry_time": "08:00",
     },
     {
@@ -127,7 +127,7 @@ SEGMENTS: list[dict] = [
         "name": "low_wa",
         "match": "coll_bot_calling == 'ai_vb_calling_lowv1'",
         "total_calls": 3,
-        "entry_offset_days": 1,   # T+1
+        "entry_offset_days": 0,
         "entry_time": "08:00",
     },
     {
