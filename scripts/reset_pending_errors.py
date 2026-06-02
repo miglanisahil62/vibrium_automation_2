@@ -17,10 +17,12 @@ def main():
         if args.dry_run:
             print("DRY-RUN — no changes")
             return
-        stmt = "UPDATE wf_pending_actions SET status='PENDING', last_error=NULL WHERE status='ERROR'"
+        # Also reset attempts so the scheduler doesn't count prior failed
+        # attempts toward the per-customer daily cap on the retry.
+        stmt = "UPDATE wf_pending_actions SET status='PENDING', last_error=NULL, attempts=0 WHERE status='ERROR'"
         conn.execute(stmt)
         conn.commit()
-        print(f"Reset {n} rows → PENDING")
+        print(f"Reset {n} rows → PENDING (attempts zeroed)")
     finally:
         if conn: conn.close()
 
