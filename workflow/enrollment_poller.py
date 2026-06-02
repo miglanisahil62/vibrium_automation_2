@@ -827,7 +827,31 @@ def _run_locked(
                 wf_stats["skipped_cap"] = len(matched)
                 continue
 
-            # Apply the per-tick global cap on the remaining slice.
+            # Exclude already-enrolled customers BEFORE slot allocation.
+            # Without this filter, already-enrolled customer IDs fill the
+            # slot_count slots and INSERT OR IGNORE silently returns 0 rows,
+            # leaving the genuinely-new customers stranded in skipped_cap.
+            enroll_key_tmpl = wf.enrollment_key_template
+            already_keys = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT enrollment_key FROM workflow_runs "
+                    "WHERE workflow_id=? AND substr(enrolled_at_ist,1,10)=?",
+                    (wf.id, today),
+                ).fetchall()
+            }
+            def _key(cid: str) -> str:
+                return _format_enrollment_key(enroll_key_tmpl, cid, n)
+            new_matched = [c for c in matched if _key(c) not in already_keys]
+            skipped_already = len(matched) - len(new_matched)
+            if skipped_already:
+                log.debug(
+                    "workflow id=%s: %d already enrolled today — excluded from slot allocation",
+                    wf.id, skipped_already,
+                )
+            matched = new_matched
+
+            # Apply the per-tick global cap on the remaining (new-only) slice.
             tick_remaining = (
                 MAX_NEW_ENROLLMENTS_PER_TICK - enrolled_this_tick
             )
