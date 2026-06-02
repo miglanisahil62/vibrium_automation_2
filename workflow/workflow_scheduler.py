@@ -98,12 +98,13 @@ COOLDOWN_HOURS = 3
 # touching shared/customer_call_audit (which has its own default).
 MAX_CALLS_PER_DAY = 3
 
-# Default CT externaltrigger args for workflow-driven fires. These are the
-# Vibrium production values; overrideable via the run() kwargs so future
-# workflows can target different campaigns / bots without code changes.
-_DEFAULT_CAMPAIGN_ID = 1779376735
-_DEFAULT_BOT_ID = "ai_vb_calling_default"
-_DEFAULT_CONTACT_TYPE = "voice"
+# Default CT externaltrigger args for workflow-driven fires. These match the
+# existing adhoc Vibrium campaign (config.json campaign_id/bot_id/contact_type)
+# so the workflow reuses the same live VB external trigger. Overrideable via
+# run() kwargs so future workflows can target different campaigns without code.
+_DEFAULT_CAMPAIGN_ID = 1778502723   # main VB voice bot campaign (adhoc config.json)
+_DEFAULT_BOT_ID = "VB00000005"
+_DEFAULT_CONTACT_TYPE = "collection"
 
 
 # ---------------------------------------------------------------------- types
