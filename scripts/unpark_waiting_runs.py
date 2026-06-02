@@ -38,13 +38,16 @@ def main() -> None:
         if args.dry_run:
             print("[DRY-RUN] no changes made")
             return
-        conn.execute(
-            "UPDATE workflow_runs SET ready_at_ist=? "
+        # Include updated_at_ist so the Phase 8.5 alert detector (C_RUN_WAITING)
+        # does not treat these freshly-serviced runs as stale. Use cursor.rowcount
+        # as the authoritative count (pre-flight SELECT can race with the executor).
+        cur = conn.execute(
+            "UPDATE workflow_runs SET ready_at_ist=?, updated_at_ist=? "
             "WHERE status='WAITING' AND substr(ready_at_ist,1,10) > ?",
-            (now_str, today),
+            (now_str, now_str, today),
         )
         conn.commit()
-        print(f"[OK] reset {n} runs → ready_at_ist={now_str}")
+        print(f"[OK] reset {cur.rowcount} runs → ready_at_ist={now_str}")
     finally:
         if conn is not None:
             conn.close()
