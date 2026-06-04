@@ -61,7 +61,8 @@ from pathlib import Path
 from typing import Any, Iterator, Optional, Union
 from zoneinfo import ZoneInfo
 
-from workflow.clevertap_profile import bulk_get_profiles
+from workflow.clevertap_profile import bulk_get_profiles  # noqa: F401 — retained for compat/tests
+from workflow import ct_prefetch
 from workflow.wf_store import PathLike, get_workflow_db, transaction
 
 # Defer the simpleeval / external import to call-sites — keeps the module
@@ -766,7 +767,35 @@ def _run_locked(
         # ---------------------------------------------------- Bulk CT profiles
         if not cids:
             continue
-        profiles = bulk_get_profiles(cids, concurrency=CT_BULK_CONCURRENCY)
+        # WS1: cache-first. The prefetch mode warms ct_profile_cache (workflow.db)
+        # OFF the time-critical path; here we read it instead of hammering CT live.
+        # Cache misses fall back to a live fetch via the local bulk_get_profiles
+        # (CT_ENROLL_LIVE_FALLBACK, default on) so a cold/partial cache can never
+        # zero out enrollment. date_str is IST → matches the prefetch cohort_date.
+        cached = ct_prefetch.read_cached(workflow_db_path, date_str, cids)
+        profiles: dict[str, Any] = {}
+        misses: list[str] = []
+        for cid in cids:
+            ent = cached.get(cid)
+            if ent is None or ent[0] == "error":
+                misses.append(cid)
+            elif ent[0] == "found":
+                profiles[cid] = ent[1]
+            else:  # not_found
+                profiles[cid] = None
+        if misses and os.environ.get("CT_ENROLL_LIVE_FALLBACK", "1") == "1":
+            live = bulk_get_profiles(misses, concurrency=CT_BULK_CONCURRENCY)
+            profiles.update(live)
+        elif misses:
+            # Fallback disabled + cold/partial cache → these cids cannot enrol
+            # this tick. Make it LOUD (never a silent empty morning).
+            log.warning(
+                "workflow id=%s: %d/%d cache misses and CT_ENROLL_LIVE_FALLBACK=0 "
+                "— these cids will NOT enrol this tick (prefetch likely incomplete)",
+                wf.id, len(misses), len(cids),
+            )
+            for cid in misses:
+                profiles.setdefault(cid, None)
         wf_stats["ct_fetched"] = sum(1 for p in profiles.values() if p is not None)
 
         # --------------------------------------------------- Evaluate condition

@@ -28,7 +28,7 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -48,13 +48,48 @@ _DEFAULT_CREDS_PATH = Path(
     os.path.expanduser("~/Collections_v3/Clevertap campaigns/config_CT_credentials.json")
 )
 
-_TIMEOUT: tuple[int, int] = (5, 30)                  # (connect, read) seconds
-_MAX_RETRIES_ON_429: int = 3
+def _env_int(name: str, default: int) -> int:
+    """Read an int tunable from env, falling back to `default` on absent/garbage."""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        log.warning("env %s=%r not an int — using default %d", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        log.warning("env %s=%r not a float — using default %s", name, raw, default)
+        return default
+
+
+# (connect, read) seconds — env-overridable per WS1.
+_TIMEOUT: tuple[int, int] = (
+    _env_int("CT_FETCH_CONNECT_TIMEOUT", 5),
+    _env_int("CT_FETCH_READ_TIMEOUT", 30),
+)
+_MAX_RETRIES_ON_429: int = _env_int("CT_FETCH_MAX_RETRIES", 4)
 _DEFAULT_429_SLEEP_SEC: int = 5                       # used when Retry-After absent
-_THROTTLE_WINDOW_SEC: int = 60                        # halving window for bulk
+_BACKOFF_BASE_SEC: float = _env_float("CT_FETCH_BACKOFF_BASE", 2.0)   # exp backoff base
+_BACKOFF_CAP_SEC: float = _env_float("CT_FETCH_BACKOFF_CAP", 30.0)    # max single sleep
+_THROTTLE_WINDOW_SEC: int = 60                        # 429 observation window
 _SESSION_TTL_SEC: int = 600                           # rebuild pooled session every 10 min
 _POOL_CONNECTIONS: int = 4
-_POOL_MAXSIZE: int = 16                               # > default ThreadPool concurrency=5
+# CT throttles the profile API on CONCURRENCY (~15 parallel max per CT KB), not a
+# time-window QPS — so max-concurrency is the PRIMARY control (audit P2-4). Keep a
+# token bucket as a secondary smoother. Both env-overridable.
+_MAX_CONCURRENCY: int = max(1, min(_env_int("CT_FETCH_MAX_CONCURRENCY", 8), 15))
+_FETCH_QPS: float = _env_float("CT_FETCH_QPS", 6.0)   # secondary smoother
+_FETCH_BURST: int = _env_int("CT_FETCH_BURST", 8)
+_POOL_MAXSIZE: int = max(16, _MAX_CONCURRENCY + 4)    # pool ≥ concurrency
 
 # Profile GET endpoint (region from creds.base_url).
 _GET_PATH: str = "/profile.json"
@@ -173,6 +208,76 @@ def _retry_after_seconds(resp: requests.Response) -> int:
 
 
 # --------------------------------------------------------------------------
+# Global rate limiter (token bucket) — secondary smoother under the
+# concurrency cap. Shared process-wide across all fetch workers.
+# --------------------------------------------------------------------------
+
+class _TokenBucket:
+    """Thread-safe token bucket. `acquire()` blocks until a token is available.
+
+    Refill math runs under the lock; the sleep happens OUTSIDE the lock so one
+    waiting worker never serializes the others (audit P2-2). `rate` can be
+    scaled down on sustained 429s and ramped back up after a quiet window.
+    """
+
+    def __init__(self, rate_per_sec: float, burst: int) -> None:
+        self._base_rate = max(0.1, float(rate_per_sec))
+        self._rate = self._base_rate
+        self._capacity = max(1, int(burst))
+        self._tokens = float(self._capacity)
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def _refill_locked(self, now: float) -> None:
+        elapsed = now - self._last
+        if elapsed > 0:
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            self._last = now
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._refill_locked(now)
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                # how long until one token is available
+                deficit = 1.0 - self._tokens
+                wait_s = deficit / self._rate if self._rate > 0 else 0.1
+            time.sleep(min(max(wait_s, 0.005), 1.0))   # sleep OUTSIDE the lock
+
+    def scale_down(self, factor: float = 0.5, floor: float = 0.5) -> None:
+        with self._lock:
+            self._rate = max(floor, self._rate * factor)
+
+    def ramp_up(self, factor: float = 1.5) -> None:
+        with self._lock:
+            self._rate = min(self._base_rate, self._rate * factor)
+
+    @property
+    def rate(self) -> float:
+        with self._lock:
+            return self._rate
+
+
+# Module-wide bucket — one limiter for every CT GET this process makes.
+_BUCKET = _TokenBucket(_FETCH_QPS, _FETCH_BURST)
+
+
+def _backoff_sleep_seconds(resp: requests.Response, attempt: int) -> float:
+    """429 sleep: honor Retry-After if present (CT KB), else exponential backoff
+    with a cap. attempt is 1-based."""
+    raw = resp.headers.get("Retry-After")
+    if raw is not None:
+        try:
+            return float(max(int(raw), 0))
+        except (TypeError, ValueError):
+            log.warning("CT malformed Retry-After=%r — using exp backoff", raw)
+    return min(_BACKOFF_CAP_SEC, _DEFAULT_429_SLEEP_SEC * (_BACKOFF_BASE_SEC ** (attempt - 1)))
+
+
+# --------------------------------------------------------------------------
 # Public — get_profile
 # --------------------------------------------------------------------------
 
@@ -192,214 +297,207 @@ def get_profile(
 
     Returns None on HTTP 404 (identity not in CT user store).
 
-    On 429: sleeps `Retry-After` seconds (or 5s default), retries up to 3
-    times. Raises after the final 429.
+    Routes through `_get_profile_classified` so single + bulk share one global
+    token bucket + exponential backoff. On 429 it honors `Retry-After` (else
+    exp backoff), retrying up to `_MAX_RETRIES_ON_429` times.
 
-    On other non-2xx: raises HTTPError via `raise_for_status()`.
+    CONTRACT (changed in WS1): on a persistent error — 429-exhausted, network
+    failure, 5xx, non-JSON, or a CT response missing `record` — this raises
+    `RuntimeError` (NOT `requests.HTTPError`). The executor's FETCH_CT_PROPS
+    handler treats None as the 'not_found' edge and any exception as the
+    'error' edge, so the run lands on ERROR/not_found correctly either way.
     """
     if not identity:
         raise ValueError("identity must be a non-empty string")
 
-    creds = _load_creds(creds_path)
-    url = f"{_base_url(creds)}{_GET_PATH}?{urlencode({'identity': str(identity)})}"
-    headers = _auth_headers(creds)
-
-    for attempt in range(1, _MAX_RETRIES_ON_429 + 1):
-        resp = _session().get(url, headers=headers, timeout=_TIMEOUT)
-        if resp.status_code == 404:
-            log.info("CT profile not found: identity=%s", identity)
-            return None
-        if resp.status_code == 429:
-            sleep_s = _retry_after_seconds(resp)
-            log.warning(
-                "CT profile 429 attempt=%d/%d sleep=%ds identity=%s",
-                attempt, _MAX_RETRIES_ON_429, sleep_s, identity,
-            )
-            if attempt >= _MAX_RETRIES_ON_429:
-                resp.raise_for_status()                # surfaces 429 traceback
-            time.sleep(sleep_s)
-            continue
-        # Any non-2xx other than 404/429 raises — caller decides recovery.
-        resp.raise_for_status()
-        body = resp.json()
-        record = body.get("record")
-        if not isinstance(record, dict):
-            # CT shape contract violated — surface loudly rather than handing
-            # back garbage downstream.
-            raise RuntimeError(
-                f"CT profile response missing 'record' object: identity={identity} "
-                f"body_keys={list(body.keys())}"
-            )
+    # Route through the shared bucket-aware fetch so single + bulk obey the same
+    # global rate limit and backoff. Contract preserved: record on found, None
+    # on 404, raise on persistent error (the executor's FETCH_CT_PROPS handler
+    # treats None as the 'not_found' edge and an exception as the 'error' edge).
+    status, record = _get_profile_classified(identity, creds_path, _Backoff429Tracker())
+    if status == "found":
         return record
-
-    # Defensive — loop always returns or raises above.
-    raise RuntimeError(f"get_profile fell through retry loop: identity={identity}")
+    if status == "not_found":
+        log.info("CT profile not found: identity=%s", identity)
+        return None
+    raise RuntimeError(f"get_profile failed (status=error) for identity={identity}")
 
 
 # --------------------------------------------------------------------------
 # Public — bulk_get_profiles
 # --------------------------------------------------------------------------
 
-class _ThrottleGovernor:
-    """Tracks 429 events in a rolling window. After the second 429 within
-    THROTTLE_WINDOW_SEC, signal that callers should halve concurrency.
-
-    Thread-safe: bulk_get_profiles workers call .record_429() concurrently.
-    """
+class _Backoff429Tracker:
+    """Tracks 429s in a rolling window. Signals scale-down on a 2nd-in-window
+    429, and reports whether we've been quiet long enough to ramp the bucket
+    back up. Thread-safe (bulk workers call concurrently)."""
 
     def __init__(self, window_sec: int = _THROTTLE_WINDOW_SEC) -> None:
         self._window_sec = window_sec
         self._events: list[float] = []
+        self._last_429: float = 0.0
         self._lock = threading.Lock()
 
-    def record_429(self) -> None:
+    def record_429(self) -> int:
         now = time.monotonic()
         with self._lock:
             self._events.append(now)
-            # Prune outside the window so the list doesn't grow unbounded.
-            cutoff = now - self._window_sec
-            self._events = [t for t in self._events if t >= cutoff]
+            self._last_429 = now
+            self._events = [t for t in self._events if t >= now - self._window_sec]
+            return len(self._events)
 
-    def should_halve(self) -> bool:
-        now = time.monotonic()
-        cutoff = now - self._window_sec
+    def quiet_for(self, secs: float) -> bool:
         with self._lock:
-            self._events = [t for t in self._events if t >= cutoff]
-            return len(self._events) >= 2
+            if self._last_429 == 0.0:
+                return True
+            return (time.monotonic() - self._last_429) >= secs
 
 
-def bulk_get_profiles(
-    identities: list[str],
-    *,
-    concurrency: int = 5,
-    creds_path: Path | None = None,
-) -> dict[str, dict[str, Any] | None]:
-    """Concurrent GET /profile.json for many identities.
-
-    Returns an order-stable map `{identity: record_or_None}`. A None value
-    means EITHER "404 not in CT" OR "failed after 3 retries"; the caller
-    treats both as "don't advance the run; retry next tick".
-
-    Concurrency policy: starts at `concurrency`; on the SECOND 429 within
-    a 60-second window, halves concurrency for the REMAINDER of this call.
-    A single 429 (rare blip) does not halve.
-    """
-    if not identities:
-        return {}
-    if concurrency < 1:
-        raise ValueError(f"concurrency must be >= 1; got {concurrency}")
-
-    # Dedupe input but preserve first-seen order for the output map.
-    ordered_unique: list[str] = []
-    seen: set[str] = set()
-    for i in identities:
-        if i not in seen:
-            seen.add(i)
-            ordered_unique.append(i)
-
-    governor = _ThrottleGovernor()
-    results: dict[str, dict[str, Any] | None] = {i: None for i in ordered_unique}
-
-    def _fetch_one(ident: str) -> tuple[str, dict[str, Any] | None]:
-        try:
-            rec = _get_profile_with_governor(ident, governor, creds_path)
-            return ident, rec
-        except Exception as exc:                       # noqa: BLE001 — bounded by retry
-            log.warning("bulk_get_profiles fail identity=%s err=%s", ident, exc)
-            return ident, None
-
-    # Phase 1: initial-concurrency workers. If governor trips halving partway
-    # through, Phase 2 reruns the remainder at concurrency // 2.
-    remaining = list(ordered_unique)
-    current_concurrency = max(concurrency, 1)
-
-    while remaining:
-        in_flight: list[str] = []
-        executor = ThreadPoolExecutor(max_workers=current_concurrency)
-        try:
-            future_to_id = {executor.submit(_fetch_one, ident): ident for ident in remaining}
-            in_flight = list(remaining)
-            remaining = []
-            halve_triggered = False
-
-            for fut in as_completed(future_to_id):
-                # Cancelled futures (from a halving event below) surface here
-                # too. Their identities will be re-queued — skip the result.
-                if fut.cancelled():
-                    continue
-                try:
-                    ident, rec = fut.result()
-                except Exception as exc:                          # noqa: BLE001
-                    # Unbounded exception from _fetch_one shouldn't happen
-                    # (it traps internally), but if it does, the identity
-                    # stays None in the result map.
-                    log.warning("bulk_get_profiles unexpected exc=%s", exc)
-                    continue
-                results[ident] = rec
-                if governor.should_halve() and not halve_triggered and current_concurrency > 1:
-                    halve_triggered = True
-                    # Cancel any not-yet-started futures and re-queue them at
-                    # the lower concurrency. Already-running futures complete
-                    # under the old pool.
-                    new_remaining: list[str] = []
-                    for fut2, ident2 in future_to_id.items():
-                        if fut2.cancel():
-                            new_remaining.append(ident2)
-                    if new_remaining:
-                        new_concurrency = max(current_concurrency // 2, 1)
-                        log.warning(
-                            "bulk_get_profiles: 2nd 429 within %ds; halving concurrency "
-                            "%d -> %d, requeueing %d identities",
-                            _THROTTLE_WINDOW_SEC, current_concurrency, new_concurrency,
-                            len(new_remaining),
-                        )
-                        remaining = new_remaining
-                        current_concurrency = new_concurrency
-        finally:
-            executor.shutdown(wait=True, cancel_futures=False)
-
-        # If no halving happened, remaining is [] and the while-loop exits.
-        # If halving did happen, the loop iterates once more at lower concurrency.
-
-    return results
-
-
-def _get_profile_with_governor(
+def _get_profile_classified(
     identity: str,
-    governor: _ThrottleGovernor,
     creds_path: Path | None,
-) -> dict[str, Any] | None:
-    """Internal: like `get_profile` but reports 429s to the shared governor so
-    `bulk_get_profiles` can halve concurrency across all workers.
+    tracker: _Backoff429Tracker,
+) -> tuple[str, dict[str, Any] | None]:
+    """Single GET via the shared token bucket + exponential backoff.
+
+    Returns (status, record) where status ∈ {'found','not_found','error'}.
+    Never raises — the prefetch caller persists the status verbatim, so a
+    transient 'error' is retried next pass under the per-day attempt cap.
     """
     if not identity:
-        raise ValueError("identity must be a non-empty string")
+        return ("error", None)
 
     creds = _load_creds(creds_path)
     url = f"{_base_url(creds)}{_GET_PATH}?{urlencode({'identity': str(identity)})}"
     headers = _auth_headers(creds)
 
     for attempt in range(1, _MAX_RETRIES_ON_429 + 1):
-        resp = _session().get(url, headers=headers, timeout=_TIMEOUT)
-        if resp.status_code == 404:
-            return None
-        if resp.status_code == 429:
-            governor.record_429()
-            sleep_s = _retry_after_seconds(resp)
+        _BUCKET.acquire()                                   # global rate gate
+        try:
+            resp = _session().get(url, headers=headers, timeout=_TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("CT GET network err identity=%s attempt=%d err=%s",
+                        identity, attempt, exc)
             if attempt >= _MAX_RETRIES_ON_429:
-                resp.raise_for_status()
+                return ("error", None)
+            time.sleep(min(_BACKOFF_CAP_SEC,
+                           _DEFAULT_429_SLEEP_SEC * (_BACKOFF_BASE_SEC ** (attempt - 1))))
+            continue
+
+        if resp.status_code == 404:
+            return ("not_found", None)
+        if resp.status_code == 429:
+            n_in_window = tracker.record_429()
+            if n_in_window >= 2:
+                _BUCKET.scale_down()                        # back off the whole process
+            sleep_s = _backoff_sleep_seconds(resp, attempt)
+            log.warning("CT GET 429 identity=%s attempt=%d/%d sleep=%.1fs rate=%.2f/s",
+                        identity, attempt, _MAX_RETRIES_ON_429, sleep_s, _BUCKET.rate)
+            if attempt >= _MAX_RETRIES_ON_429:
+                return ("error", None)
             time.sleep(sleep_s)
             continue
-        resp.raise_for_status()
-        body = resp.json()
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            log.warning("CT GET http err identity=%s status=%s err=%s",
+                        identity, resp.status_code, exc)
+            return ("error", None)
+
+        # success — ramp the bucket back up once 429s have stopped for a window
+        if tracker.quiet_for(_THROTTLE_WINDOW_SEC):
+            _BUCKET.ramp_up()
+        try:
+            body = resp.json()
+        except ValueError:
+            log.warning("CT GET non-JSON body identity=%s", identity)
+            return ("error", None)
         record = body.get("record")
         if not isinstance(record, dict):
-            raise RuntimeError(
-                f"CT profile response missing 'record' object: identity={identity}"
-            )
-        return record
+            log.warning("CT GET response missing 'record' identity=%s", identity)
+            return ("error", None)
+        return ("found", record)
 
-    raise RuntimeError(f"_get_profile_with_governor fell through: identity={identity}")
+    return ("error", None)
+
+
+def _bulk_fetch_core(
+    identities: list[str],
+    *,
+    concurrency: int,
+    creds_path: Path | None,
+) -> dict[str, tuple[str, dict[str, Any] | None]]:
+    """Persistent-pool bulk fetch with BOUNDED submission (no submit-all-at-once)
+    and the shared token bucket. Returns `{identity: (status, record)}`.
+
+    Concurrency is capped at `_MAX_CONCURRENCY` (CT throttles on parallelism);
+    request RATE is bounded by the global token bucket; 429s scale the bucket
+    down across all workers and ramp back up after a quiet window. No
+    concurrency-halving / cancel-requeue (that was the stall class)."""
+    ordered_unique: list[str] = []
+    seen: set[str] = set()
+    for i in identities:
+        s = str(i).strip()
+        if s and s not in seen:
+            seen.add(s)
+            ordered_unique.append(s)
+
+    out: dict[str, tuple[str, dict[str, Any] | None]] = {}
+    if not ordered_unique:
+        return out
+
+    workers = max(1, min(int(concurrency), _MAX_CONCURRENCY))
+    tracker = _Backoff429Tracker()
+    window = workers * 4                                    # bounded in-flight
+    pending = iter(ordered_unique)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures: dict[Any, str] = {}
+        for _ in range(window):
+            ident = next(pending, None)
+            if ident is None:
+                break
+            futures[ex.submit(_get_profile_classified, ident, creds_path, tracker)] = ident
+
+        while futures:
+            done, _pendingset = wait(list(futures.keys()), return_when=FIRST_COMPLETED)
+            for fut in done:
+                ident = futures.pop(fut)
+                try:
+                    status, record = fut.result()
+                except Exception as exc:                   # noqa: BLE001 — worker traps internally
+                    log.warning("bulk fetch worker exc identity=%s err=%s", ident, exc)
+                    status, record = ("error", None)
+                out[ident] = (status, record)
+                nxt = next(pending, None)
+                if nxt is not None:
+                    futures[ex.submit(_get_profile_classified, nxt, creds_path, tracker)] = nxt
+
+    return out
+
+
+def bulk_fetch_status(
+    identities: list[str],
+    *,
+    concurrency: int = _MAX_CONCURRENCY,
+    creds_path: Path | None = None,
+) -> dict[str, tuple[str, dict[str, Any] | None]]:
+    """Bulk fetch returning `{identity: (status, record)}` with status ∈
+    {'found','not_found','error'} — the shape `ct_prefetch` persists to cache."""
+    return _bulk_fetch_core(identities, concurrency=concurrency, creds_path=creds_path)
+
+
+def bulk_get_profiles(
+    identities: list[str],
+    *,
+    concurrency: int = _MAX_CONCURRENCY,
+    creds_path: Path | None = None,
+) -> dict[str, dict[str, Any] | None]:
+    """Backward-compatible wrapper: `{identity: record_or_None}` (None = 404 OR
+    error). Prefer `bulk_fetch_status` when you need to distinguish the two."""
+    core = _bulk_fetch_core(identities, concurrency=concurrency, creds_path=creds_path)
+    return {ident: (rec if status == "found" else None) for ident, (status, rec) in core.items()}
 
 
 # --------------------------------------------------------------------------

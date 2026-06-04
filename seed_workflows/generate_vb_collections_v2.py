@@ -104,21 +104,21 @@ SEGMENTS: list[dict] = [
     },
     {
         "name": "mid_nowa_1",
-        "match": "coll_bot_calling == 'ai_vb_calling_mid_v2'",
+        "match": "coll_bot_calling == 'ai_vb_calling_midv2'",
         "total_calls": 2,
         "entry_offset_days": 0,   # T+0 per VB_Prompt_Doc (1): "day they fulfil"
         "entry_time": "08:00",
     },
     {
         "name": "mid_nowa_2",
-        "match": "coll_bot_calling == 'ai_vb_calling_mid_v3'",
+        "match": "coll_bot_calling == 'ai_vb_calling_midv3'",
         "total_calls": 3,
         "entry_offset_days": 0,   # T+0 — same day
         "entry_time": "08:00",
     },
     {
         "name": "mid_nowa_3",
-        "match": "coll_bot_calling == 'ai_vb_calling_mid_v4'",
+        "match": "coll_bot_calling == 'ai_vb_calling_midv4'",
         "total_calls": 1,
         "entry_offset_days": 0,
         "entry_time": "08:00",

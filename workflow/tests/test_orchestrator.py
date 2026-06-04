@@ -70,7 +70,9 @@ def _read_heartbeats(db: Path, agent: str | None = None) -> list[dict]:
 
 
 def test_daemon_name_contract_six_keys() -> None:
-    """The Phase 8.5 audit pins these 6 agent strings. Test guards drift."""
+    """The Phase 8.5 audit pins these agent strings. Test guards drift.
+    (WS1 added workflow_ct_prefetch — a once-daily job, deliberately NOT in the
+    30-min _TRACKED_DAEMONS liveness set in alerts.py.)"""
     expected = {
         "workflow_executor",
         "workflow_scheduler",
@@ -78,6 +80,7 @@ def test_daemon_name_contract_six_keys() -> None:
         "workflow_enrollment",
         "workflow_alerts",
         "workflow_digest",
+        "workflow_ct_prefetch",
     }
     actual = {triple[0] for triple in orch._MODE_REGISTRY.values()}
     assert actual == expected, (

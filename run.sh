@@ -42,6 +42,13 @@ for envf in redshift.env ops.env; do
     fi
 done
 
+# WS1 — CT fetch tuning (env-overridable; defaults chosen so the prefetch +
+# enrollment live-fallback finish well inside their timeouts). CT throttles on
+# CONCURRENCY (~15 parallel) not QPS, so concurrency is the real cap; QPS is a
+# secondary smoother set generous. secrets/ops.env can override either.
+export CT_FETCH_MAX_CONCURRENCY="${CT_FETCH_MAX_CONCURRENCY:-10}"
+export CT_FETCH_QPS="${CT_FETCH_QPS:-25}"
+
 # Shadow flag for the scheduler: ON unless explicitly disabled.
 SHADOW_FLAG="--shadow"
 [[ "${WF_SHADOW:-1}" == "0" ]] && SHADOW_FLAG=""
@@ -60,6 +67,11 @@ case "${MODE}" in
         [[ -n "${SHADOW_FLAG}" ]] && FLAGS+=("${SHADOW_FLAG}") ;;
     ingest)
         TIMEOUT_SEC=1500 ;;
+    prefetch)
+        # WS1 — CT profile prefetch into ct_profile_cache (workflow.db). Runs
+        # OFF the time-critical enrollment path with a generous budget so a
+        # large 1–30 base + CT rate-limiting can't blow the enrollment timeout.
+        TIMEOUT_SEC=1800 ;;
     enrollment)
         TIMEOUT_SEC=900
         # Enable the 07:00 pre-window prep slot (firing stays gated at 08:00 by
@@ -74,7 +86,7 @@ case "${MODE}" in
     enrollment_funnel_emailer)
         TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
     *)
-        echo "unknown mode '${MODE}' (executor|scheduler|ingest|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer)" >&2
+        echo "unknown mode '${MODE}' (executor|scheduler|ingest|prefetch|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer)" >&2
         exit 2 ;;
 esac
 

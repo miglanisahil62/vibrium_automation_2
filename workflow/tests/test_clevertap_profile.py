@@ -32,7 +32,13 @@ TARGET_PROPS = (
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
-    """Clear cred cache + session between tests so each starts clean."""
+    """Clear cred cache + session between tests so each starts clean.
+
+    Also neutralize the global token bucket: tests mock `time.sleep`, which
+    would make `_TokenBucket.acquire()` busy-spin if tokens ran out. Pinning a
+    huge capacity/rate means acquire() never has to wait — we test fetch logic,
+    not the limiter (the limiter has its own dedicated tests).
+    """
     ctp._CRED_CACHE.clear()
     if ctp._SESSION is not None:
         try:
@@ -41,6 +47,11 @@ def _reset_module_state():
             pass
     ctp._SESSION = None
     ctp._SESSION_CREATED_AT = 0.0
+    _huge = 10 ** 9
+    ctp._BUCKET._capacity = _huge
+    ctp._BUCKET._tokens = float(_huge)
+    ctp._BUCKET._base_rate = float(_huge)
+    ctp._BUCKET._rate = float(_huge)
     yield
     ctp._CRED_CACHE.clear()
     ctp._SESSION = None
@@ -169,22 +180,28 @@ def test_get_profile_429_without_retry_after_uses_default(
 def test_get_profile_429_max_retries_then_raises(
     mocker, fake_creds_file: Path
 ) -> None:
+    # WS1 contract: persistent 429 exhausts _MAX_RETRIES_ON_429 attempts then
+    # _get_profile_classified returns ('error', None) → get_profile raises
+    # RuntimeError (NOT HTTPError). Provide exactly _MAX_RETRIES_ON_429 responses.
     mocker.patch.object(time, "sleep")
     mocker.patch.object(
         requests.Session,
         "get",
-        side_effect=[_FakeResponse(status_code=429, headers={"Retry-After": "1"})] * 3,
+        side_effect=[_FakeResponse(status_code=429, headers={"Retry-After": "1"})]
+        * ctp._MAX_RETRIES_ON_429,
     )
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(RuntimeError):
         ctp.get_profile("8968249", creds_path=fake_creds_file)
 
 
 def test_get_profile_raises_on_500(mocker, fake_creds_file: Path) -> None:
+    # WS1 contract: a 5xx is classified as 'error' → get_profile raises
+    # RuntimeError (the executor treats any exception as the 'error' edge).
     mocker.patch.object(time, "sleep")
     mocker.patch.object(
         requests.Session, "get", return_value=_FakeResponse(status_code=500),
     )
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(RuntimeError):
         ctp.get_profile("8968249", creds_path=fake_creds_file)
 
 
@@ -219,72 +236,92 @@ def test_bulk_get_profiles_mixed_success_and_failure(
         assert result[ident]["profileData"]["dpd"] == 29
 
 
-def test_throttle_governor_records_429s_and_halves_on_second() -> None:
-    """Unit test for _ThrottleGovernor — drives the governor directly rather
-    than racing a TPE.
-
-    Prior version of this test (a 70-line Timer + Event choreography) was
-    timing-flaky (3 of 8 isolated runs failed per Phase 2 master-auditor).
-    The production halving logic is contained in _ThrottleGovernor; testing
-    it directly eliminates the race surface.
-    """
-    g = ctp._ThrottleGovernor(window_sec=60)
-
-    # 0 events → not halving yet.
-    assert g.should_halve() is False
-
-    # 1 event → still not halving (the threshold is 2 in a window).
-    g.record_429()
-    assert g.should_halve() is False
-
-    # 2 events → halving signal fires.
-    g.record_429()
-    assert g.should_halve() is True
+def test_backoff_tracker_counts_429s_in_window() -> None:
+    """_Backoff429Tracker.record_429 returns the rolling count; the 2nd-in-window
+    is what triggers a bucket scale-down in _get_profile_classified."""
+    t = ctp._Backoff429Tracker(window_sec=60)
+    assert t.record_429() == 1
+    assert t.record_429() == 2          # 2nd in window → scale-down trigger
 
 
-def test_throttle_governor_thread_safe_under_parallel_record_429() -> None:
-    """10 worker threads each record 5 events. Final state must show 50
-    events tracked (or the window-pruning logic correctly retains the
-    threshold). The Lock inside _ThrottleGovernor is the load-bearing
-    invariant — verify no event is lost to a race.
-    """
-    import threading
-    g = ctp._ThrottleGovernor(window_sec=60)
-
-    def _worker():
-        for _ in range(5):
-            g.record_429()
-
-    threads = [threading.Thread(target=_worker) for _ in range(10)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    # Internal state inspection — 10 * 5 = 50 events, all within the 60s window.
-    with g._lock:
-        assert len(g._events) == 50
-
-    # And the halving signal is on (well past 2 events).
-    assert g.should_halve() is True
+def test_backoff_tracker_quiet_for() -> None:
+    """quiet_for is True before any 429, and False immediately after one."""
+    t = ctp._Backoff429Tracker(window_sec=60)
+    assert t.quiet_for(5.0) is True     # no 429 ever recorded
+    t.record_429()
+    assert t.quiet_for(5.0) is False    # just recorded — not quiet
 
 
-def test_throttle_governor_prunes_events_outside_window(mocker) -> None:
-    """Events older than window_sec are pruned on the next record_429 /
-    should_halve call. Verified by patching time.monotonic to advance past
-    the window boundary.
-    """
+def test_backoff_tracker_prunes_outside_window(mocker) -> None:
     import itertools
-    # Sequence: t=0 (first 429), t=0 (second 429), t=120 (check after window).
-    fake_clock = itertools.chain([0.0, 0.0, 120.0, 120.0])
+    # record at t=0, record at t=0, then check count after a fresh record at t=120.
+    fake_clock = itertools.chain([0.0, 0.0, 120.0, 120.0, 120.0])
     mocker.patch.object(ctp.time, "monotonic", side_effect=lambda: next(fake_clock))
+    t = ctp._Backoff429Tracker(window_sec=60)
+    t.record_429()  # t=0
+    t.record_429()  # t=0
+    # At t=120 both prior events are outside the 60s window → only the new one counts.
+    assert t.record_429() == 1
 
-    g = ctp._ThrottleGovernor(window_sec=60)
-    g.record_429()  # t=0
-    g.record_429()  # t=0
-    # Both events are inside the 60s window from t=0's perspective — but the
-    # NEXT should_halve at t=120 should see them as expired.
-    assert g.should_halve() is False  # at t=120, both events pruned
+
+def test_token_bucket_burst_then_refill(mocker) -> None:
+    """The burst token is instant; the next acquire must WAIT (sleep) until the
+    clock advances enough to refill. Clock returns 0 for the first few calls
+    then jumps far ahead, so the empty-acquire sleeps then proceeds — fast and
+    not dependent on an exact monotonic() call count."""
+    calls = {"n": 0}
+
+    def _clock() -> float:
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 5 else 100.0
+
+    mocker.patch.object(ctp.time, "monotonic", side_effect=_clock)
+    sleep_mock = mocker.patch.object(ctp.time, "sleep")
+    b = ctp._TokenBucket(rate_per_sec=1.0, burst=1)
+    b.acquire()   # burst token — instant
+    b.acquire()   # empty → sleeps until the clock jumps and refills
+    assert sleep_mock.called
+
+
+def test_token_bucket_scale_down_and_ramp_up() -> None:
+    b = ctp._TokenBucket(rate_per_sec=8.0, burst=8)
+    assert b.rate == 8.0
+    b.scale_down(factor=0.5, floor=0.5)
+    assert b.rate == 4.0
+    b.scale_down(factor=0.5, floor=0.5)
+    assert b.rate == 2.0
+    b.ramp_up(factor=1.5)
+    assert b.rate == 3.0
+    # ramp never exceeds base_rate
+    for _ in range(10):
+        b.ramp_up(factor=2.0)
+    assert b.rate == 8.0
+
+
+def test_token_bucket_rate_floor_no_divide_by_zero() -> None:
+    """scale_down respects the floor so acquire()'s deficit/rate never /0."""
+    b = ctp._TokenBucket(rate_per_sec=1.0, burst=1)
+    for _ in range(50):
+        b.scale_down(factor=0.5, floor=0.5)
+    assert b.rate >= 0.5
+
+
+def test_bulk_fetch_status_classifies(mocker, fake_creds_file: Path, fixture_body) -> None:
+    """bulk_fetch_status returns (status, record) with found/not_found/error."""
+    mocker.patch.object(time, "sleep")
+
+    def _side_effect(url, **kwargs):
+        if "identity=missing" in url:
+            return _FakeResponse(status_code=404)
+        if "identity=boom" in url:
+            return _FakeResponse(status_code=500)
+        return _FakeResponse(body=fixture_body)
+
+    mocker.patch.object(requests.Session, "get", side_effect=_side_effect)
+    out = ctp.bulk_fetch_status(["ok1", "missing", "boom"], concurrency=3, creds_path=fake_creds_file)
+    assert out["ok1"][0] == "found" and out["ok1"][1] is not None
+    assert out["missing"] == ("not_found", None)
+    assert out["boom"] == ("error", None)
 
 
 def test_bulk_get_profiles_empty_list(mocker, fake_creds_file: Path) -> None:

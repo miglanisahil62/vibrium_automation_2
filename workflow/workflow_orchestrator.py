@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 log = logging.getLogger(__name__)
 
-# The 6 valid --mode values + their (agent_name, module_path, callable_name)
+# The valid --mode values + their (agent_name, module_path, callable_name)
 # triples. Daemon names MUST match Phase 8.5's contract.
 _MODE_REGISTRY: dict[str, tuple[str, str, str]] = {
     "executor":   ("workflow_executor",   "workflow.agents.workflow",    "run"),
@@ -56,6 +56,8 @@ _MODE_REGISTRY: dict[str, tuple[str, str, str]] = {
     "enrollment": ("workflow_enrollment", "workflow.enrollment_poller",  "run"),
     "alerts":     ("workflow_alerts",     "workflow.alerts",             "run"),
     "digest":     ("workflow_digest",     "workflow.workflow_digest",    "run"),
+    # WS1 — CT profile prefetch (off the critical path; warms ct_profile_cache).
+    "prefetch":   ("workflow_ct_prefetch", "workflow.ct_prefetch",       "prefetch"),
 }
 
 

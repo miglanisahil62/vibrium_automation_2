@@ -534,7 +534,7 @@
       "type": "CONDITION",
       "label": "Classify: mid_nowa_1?",
       "config": {
-        "expr": "coll_bot_calling == 'ai_vb_calling_mid_v2'"
+        "expr": "coll_bot_calling == 'ai_vb_calling_midv2'"
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000022",
@@ -759,7 +759,7 @@
       "type": "CONDITION",
       "label": "Classify: mid_nowa_2?",
       "config": {
-        "expr": "coll_bot_calling == 'ai_vb_calling_mid_v3'"
+        "expr": "coll_bot_calling == 'ai_vb_calling_midv3'"
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000023",
@@ -984,7 +984,7 @@
       "type": "CONDITION",
       "label": "Classify: mid_nowa_3?",
       "config": {
-        "expr": "coll_bot_calling == 'ai_vb_calling_mid_v4'"
+        "expr": "coll_bot_calling == 'ai_vb_calling_midv4'"
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000024",
