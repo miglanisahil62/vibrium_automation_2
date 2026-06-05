@@ -64,8 +64,15 @@ def _insert_workflow_run(
     status: str = "WAITING",
     entered_node_at_ist: str,
     scratchpad_json: str = "{}",
+    current_node_type: str = "AWAIT_DISPOSITION",
 ) -> None:
-    """Insert a workflow_runs row with explicit id."""
+    """Insert a workflow_runs row with explicit id.
+
+    ``current_node_type`` defaults to AWAIT_DISPOSITION (the parked-for-outcome
+    state the wake targets). Pass a different type to model a run that has
+    advanced past the AWAIT node (e.g. COUNTER / TERMINATE) — the wake must skip
+    those, since the disposition is keyed by node TYPE, not the FIRE node id.
+    """
     conn = get_workflow_db(wf_db_path)
     try:
         with transaction(conn):
@@ -79,7 +86,7 @@ def _insert_workflow_run(
                 """,
                 (
                     run_id, workflow_id, version_id, customer_id,
-                    current_node_id, "AWAIT_DISPOSITION",
+                    current_node_id, current_node_type,
                     entered_node_at_ist, status, scratchpad_json,
                 ),
             )
@@ -426,18 +433,24 @@ def test_multi_comment_batch_stats(wf_db):
 
 
 def test_state_mismatch_does_not_wake(wf_db):
-    """Run advanced past the matched node → wake refused."""
+    """Run advanced PAST the AWAIT node (no longer awaiting) → wake refused.
+
+    'Moved on' is now modelled by current_node_type != AWAIT_DISPOSITION (the
+    run reached a COUNTER/TERMINATE), NOT by a node-id differing from the FIRE
+    node — that difference is the NORMAL FIRE→AWAIT hop and must still wake (see
+    test_wakes_run_parked_at_await_with_different_node_id).
+    """
     now = datetime.now(IST)
     fired = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     entered = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
-    # Run is parked at a DIFFERENT node now (not the one we fired from).
+    # Run has advanced past AWAIT to a COUNTER node — not awaiting a disposition.
     _insert_workflow_run(
         wf_db, run_id=70, customer_id="C7",
-        current_node_id="N_NEXT",  # advanced past N_AWAIT
+        current_node_id="N_NEXT", current_node_type="COUNTER",
         entered_node_at_ist=entered,
     )
     _insert_pending_action(
-        wf_db, run_id=70, node_id="N_AWAIT", attempt_count=1,
+        wf_db, run_id=70, node_id="N_FIRE", attempt_count=1,
         customer_id="C7", fired_at_ist=fired,
     )
 
@@ -456,6 +469,54 @@ def test_state_mismatch_does_not_wake(wf_db):
 
     # Decision log still records — audit trail must show the late arrival.
     assert len(_get_decision_log(wf_db)) == 1
+
+
+def test_wakes_run_parked_at_await_with_different_node_id(wf_db):
+    """REGRESSION (2026-06-05): the pending action records the FIRE node id, but
+    the run parks at the downstream AWAIT_DISPOSITION node — a DIFFERENT node id.
+    The wake must still fire (it keys on node TYPE, not FIRE-node-id equality).
+    Before the fix this was skipped as 'state mismatch', stranding every called
+    run until the 24h timeout.
+    """
+    now = datetime.now(IST)
+    fired = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    entered = (now - timedelta(minutes=50)).strftime("%Y-%m-%d %H:%M:%S")
+    # Run parked at the AWAIT node (id 'a0...002'); the FIRE action's node id is
+    # the FIRE node ('a0...001') — deliberately different, the real-world case.
+    _insert_workflow_run(
+        wf_db, run_id=71, customer_id="C71",
+        current_node_id="a0000000-0000-4000-a000-000000000002",
+        current_node_type="AWAIT_DISPOSITION",
+        entered_node_at_ist=entered,
+    )
+    _insert_pending_action(
+        wf_db, run_id=71, node_id="a0000000-0000-4000-a000-000000000001",
+        attempt_count=1, customer_id="C71", fired_at_ist=fired,
+    )
+
+    rows = [{
+        "id": 12002, "customer_id": "C71", "comment_id": "cm-await",
+        "create_date": datetime.now(UTC).replace(tzinfo=None),
+        "comment": "merchant_name : vibrium, disposition : Paid",
+    }]
+    stats = ingest_run(
+        wf_db, since=now - timedelta(days=1),
+        comment_fetcher=_make_fetcher(rows),
+    )
+    assert stats["matched"] == 1
+    assert stats["waked"] == 1
+    assert stats["skipped_state_mismatch"] == 0
+
+    # The run is now ready_at-set (woken) with the action_class in scratchpad.
+    conn = get_workflow_db(wf_db)
+    try:
+        r = conn.execute(
+            "SELECT ready_at_ist, scratchpad_json FROM workflow_runs WHERE id=71"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert r["ready_at_ist"] is not None
+    assert "last_disposition_action_class" in json.loads(r["scratchpad_json"])
 
 
 def test_watermark_persists_across_runs(wf_db):

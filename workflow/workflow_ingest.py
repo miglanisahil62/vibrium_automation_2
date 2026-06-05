@@ -280,12 +280,25 @@ def _wake_run(
 ) -> bool:
     """Wake the matched run, but only if its state is consistent.
 
+    ``node_id`` is the FIRE_VB_CALL node recorded on the matched
+    ``wf_pending_actions`` row (the node that FIRED the call). The run does NOT
+    park there — once the call is queued the FSM advances FIRE → its downstream
+    ``AWAIT_DISPOSITION`` node and parks THERE waiting for the outcome. So the
+    correct consistency check is "the run is WAITING at an AWAIT_DISPOSITION
+    node", NOT "current_node_id == the FIRE node". Requiring the latter rejected
+    every legitimate disposition (current_node was always the AWAIT node, never
+    the FIRE node) — the 2026-06-05 ``skipped_state_mismatch`` regression that
+    left every called run stuck until the 24h timeout. ``node_id`` is still used
+    for the decision-log audit trail (which call this disposition answers).
+
     Guards (all must hold):
         * workflow_runs.id == run_id exists
-        * workflow_runs.current_node_id == node_id  (still parked here)
+        * workflow_runs.current_node_type == 'AWAIT_DISPOSITION'  (parked
+          waiting for an outcome — the node that consumes the disposition)
         * workflow_runs.status == 'WAITING'
         * workflow_runs.entered_node_at_ist <= comment_create_ist  (no
-          time-travelling — comment must not predate the node entry).
+          time-travelling — comment must not predate the node entry; this is the
+          attribution anchor that ties the disposition to THIS wait).
 
     Side-effects (one UPDATE):
         * ready_at_ist := now()
@@ -296,7 +309,8 @@ def _wake_run(
     """
     run = conn.execute(
         """
-        SELECT id, current_node_id, status, entered_node_at_ist, scratchpad_json
+        SELECT id, current_node_id, current_node_type, status,
+               entered_node_at_ist, scratchpad_json
         FROM workflow_runs
         WHERE id = ?
         """,
@@ -306,10 +320,16 @@ def _wake_run(
     if run is None:
         log.info("wake skipped: run %d not found", run_id)
         return False
-    if run["current_node_id"] != node_id:
+    if run["current_node_type"] != "AWAIT_DISPOSITION":
+        # The run is not parked awaiting a disposition (already branched,
+        # terminated, or mid-walk). A disposition arriving now has nothing to
+        # wake — genuinely skip. (Distinct from the old bug: this fires only
+        # when the run truly isn't waiting, not on the normal FIRE→AWAIT hop.)
         log.info(
-            "wake skipped: state mismatch run=%d current_node=%r vs matched_node=%r",
-            run_id, run["current_node_id"], node_id,
+            "wake skipped: run=%d not awaiting disposition "
+            "(status=%r current_node=%r type=%r; matched FIRE node=%r)",
+            run_id, run["status"], run["current_node_id"],
+            run["current_node_type"], node_id,
         )
         return False
     if run["status"] != "WAITING":
