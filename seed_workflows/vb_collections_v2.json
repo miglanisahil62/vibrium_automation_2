@@ -18,7 +18,7 @@
       "label": "Fetch CT Properties",
       "config": {
         "properties": {
-          "dpd": "int",
+          "dpd": "int?",
           "coll_collection_risk_segmentation": "int?",
           "coll_notification_replied": "str?",
           "coll_bot_calling": "str?"

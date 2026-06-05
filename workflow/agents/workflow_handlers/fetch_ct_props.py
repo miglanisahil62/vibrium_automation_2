@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from datetime import datetime
 from typing import Any
@@ -85,12 +86,18 @@ _ALLOWED_SCHEMA_TYPES: tuple = ("int", "float", "str", "bool")
 def _parse_schema_type(prop_type: str) -> tuple[str, bool]:
     """Split a schema type into (base_type, optional).
 
-    A trailing ``?`` marks the property OPTIONAL: if it is absent from the CT
-    profile, the handler sets it to ``None`` in scratchpad instead of routing
-    to the ``error`` edge. This lets one FETCH_CT_PROPS node serve a graph
-    whose segments key on DIFFERENT properties (e.g. ``coll_bot_calling`` is
-    present for some segments, absent for a risk-rule segment) without every
-    customer missing one optional field being dropped as FETCH_FAILED.
+    A trailing ``?`` marks the property OPTIONAL. For an optional property the
+    handler sets ``None`` in scratchpad (instead of routing to the ``error``
+    edge) when the property is EITHER:
+      * absent from the CT profile, OR
+      * present but UN-COERCIBLE to the declared type (e.g. CT stores
+        ``dpd = 'NaN'`` for ~19% of the X-bucket base; ``int('NaN')`` raises).
+
+    Both cases mean "this field isn't usable for this customer" — and for an
+    optional field that must NOT drop the customer as FETCH_FAILED. (A REQUIRED
+    field that is absent or un-coercible still routes to ``error``.) This lets
+    one FETCH_CT_PROPS node serve a graph whose segments key on DIFFERENT
+    properties without a single junk value zeroing out a fifth of the cohort.
 
     Examples: ``"str"`` -> ("str", False); ``"str?"`` -> ("str", True).
     """
@@ -125,7 +132,15 @@ def _coerce(value: Any, target_type: str) -> Any:
             raise ValueError(f"refusing to coerce bool to float: {value!r}")
         if value is None:
             raise ValueError("cannot coerce None to float")
-        return float(value)
+        f = float(value)
+        # Reject non-finite: float('NaN')/float('inf') would SUCCEED (unlike
+        # int('NaN') which raises), silently slipping junk past the optional-
+        # degrade-to-None contract — `nan != None` is True and `nan < 5` is
+        # False, so a None-guarded segment rule would fail open. Raise so a
+        # 'NaN'/'inf' on a float? prop degrades to None like the int branch.
+        if not math.isfinite(f):
+            raise ValueError(f"refusing to coerce non-finite float: {value!r}")
+        return f
     if target_type == "str":
         if value is None:
             raise ValueError("cannot coerce None to str")
@@ -233,8 +248,20 @@ def execute(
         raw = profile_data[prop_name]
         try:
             patch[prop_name] = _coerce(raw, base_type)
-        except (ValueError, TypeError) as exc:  # stashfin-lint: ignore  # documented contract: coercion failure routes to 'error' edge with property name in scratchpad; executor logs side_effect.
-
+        except (ValueError, TypeError) as exc:  # stashfin-lint: ignore  # documented contract: REQUIRED prop coercion failure routes to 'error'; OPTIONAL prop coercion failure degrades to None (see _parse_schema_type docstring).
+            if optional:
+                # Optional + un-coercible (e.g. CT dpd='NaN') → None, keep the
+                # customer. Without this, a single junk value (dpd='NaN' hits
+                # ~19% of the X-bucket base) routes to 'error' → FETCH_FAILED →
+                # the customer is dropped before classification. Log so a NEW
+                # field silently going all-junk is still visible in the logs.
+                log.warning(
+                    "CT prop %s=%r un-coercible to %s for cid=%s — optional, "
+                    "set None (%s)", prop_name, raw, base_type,
+                    run.customer_id, exc,
+                )
+                patch[prop_name] = None
+                continue
             return NodeResult(
                 next_edge="error",
                 scratchpad_patch={

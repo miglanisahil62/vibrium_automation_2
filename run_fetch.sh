@@ -57,6 +57,22 @@ if [[ "${RC}" -eq 124 ]]; then
 fi
 echo "===== $(date '+%F %T %Z') — finished fetch_dpd1 (exit=${RC}) =====" >> "${LOG_FILE}"
 
+# Chain the CT prefetch on the cohort this fetch just wrote. This guarantees the
+# prefetch ALWAYS runs AFTER fetch and on the FULL, freshly-written CSV —
+# eliminating the fetch/prefetch ordering race that left ~5k customers uncached
+# on 2026-06-05 (a standalone prefetch ran on a stale/partial cohort before the
+# full fetch landed). The standalone 07:32 cron prefetch remains as a resumable,
+# idempotent catch-up (UPSERT keyed on (customer_id, cohort_date) → re-running is
+# harmless). Runs only on a successful fetch that produced today's CSV; a chained
+# prefetch failure is non-fatal here (the cron catch-up + the executor's live
+# fallback both cover it) so it must not flip THIS job's fetch heartbeat.
+if [[ "${RC}" -eq 0 && -f "${TODAY_CSV}" ]]; then
+    echo "===== $(date '+%F %T %Z') — chaining prefetch on fresh cohort =====" >> "${LOG_FILE}"
+    "${BASE_DIR}/run.sh" prefetch >> "${LOG_DIR}/cron.log" 2>&1 \
+        && echo "$(date '+%F %T %Z') — chained prefetch ok" >> "${LOG_FILE}" \
+        || echo "$(date '+%F %T %Z') — WARN chained prefetch non-zero; cron catch-up + live fallback will cover" >> "${LOG_FILE}"
+fi
+
 # Heartbeat: ok on success, down on any non-zero (incl. zero-rows-failure and
 # timeout). morning_summary reads this; a 'down' here means no cohort today.
 if [[ -f /home/ubuntu/heartbeat_lib.py ]]; then

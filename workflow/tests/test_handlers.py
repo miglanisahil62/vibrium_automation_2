@@ -272,6 +272,64 @@ class TestFetchCtProps:
         assert result.next_edge == "success"
         assert result.scratchpad_patch["coll_bot_calling"] == "ai_vb_calling_highv1"
 
+    def test_optional_property_uncoercible_sets_none_not_error(
+        self, monkeypatch, base_run: Run,
+    ):
+        # CT stores dpd='NaN' (string) for ~19% of the X-bucket base. With dpd
+        # OPTIONAL ('int?'), an un-coercible present value must degrade to None
+        # and the customer must still reach classification — NOT route to error
+        # (which would be FETCH_FAILED, dropping ~3,137 customers/day, the
+        # 2026-06-05 regression). The classification props still coerce normally.
+        monkeypatch.setattr(
+            ctp, "get_profile",
+            lambda cid: {"profileData": {
+                "dpd": "NaN",
+                "coll_collection_risk_segmentation": 3,
+                "coll_bot_calling": "ai_vb_calling_highv1",
+            }},
+        )
+        node = _node("FETCH_CT_PROPS", {
+            "properties": {
+                "dpd": "int?",
+                "coll_collection_risk_segmentation": "int?",
+                "coll_bot_calling": "str?",
+            },
+        })
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert result.scratchpad_patch["dpd"] is None
+        assert result.scratchpad_patch["coll_collection_risk_segmentation"] == 3
+        assert result.scratchpad_patch["coll_bot_calling"] == "ai_vb_calling_highv1"
+
+    def test_required_property_uncoercible_still_errors(
+        self, monkeypatch, base_run: Run,
+    ):
+        # The optional-degrades-to-None path must NOT leak to required props:
+        # a REQUIRED prop that is present-but-un-coercible still routes to error.
+        monkeypatch.setattr(
+            ctp, "get_profile",
+            lambda cid: {"profileData": {"dpd": "NaN"}},
+        )
+        node = _node("FETCH_CT_PROPS", {"properties": {"dpd": "int"}})
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+        assert result.scratchpad_patch["coercion_failed_property"] == "dpd"
+
+    def test_optional_float_nonfinite_degrades_to_none(
+        self, monkeypatch, base_run: Run,
+    ):
+        # float('NaN') SUCCEEDS in stdlib (unlike int('NaN')), so without the
+        # math.isfinite guard a 'NaN' on a float? prop would slip past the
+        # optional-degrade contract as an actual nan. Confirm it degrades to None.
+        monkeypatch.setattr(
+            ctp, "get_profile",
+            lambda cid: {"profileData": {"some_score": "NaN"}},
+        )
+        node = _node("FETCH_CT_PROPS", {"properties": {"some_score": "float?"}})
+        result = fetch_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "success"
+        assert result.scratchpad_patch["some_score"] is None
+
     def test_required_property_still_errors_when_absent(
         self, monkeypatch, base_run: Run,
     ):

@@ -59,27 +59,39 @@ def test_zero_rows_writes_empty_cohort_and_exits_ok(monkeypatch, tmp_path):
     # a header-only CSV and return cleanly (no raise, no alert). A real
     # query/connection failure raises inside _fetch_candidates → main() exit 1.
     monkeypatch.setattr(fd, "OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr(fd, "_fetch_candidates", lambda limit: [])
+    # _fetch_candidates now takes (limit, cohort_date) and returns
+    # (customer_id, spell_start) pairs (WS2/WS8).
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda limit, cohort_date: [])
     summary = fd.do_work(_args())
     assert summary["n_written"] == 0
     out = tmp_path / "dpd1_candidates_2026-05-30.csv"
     assert out.exists()
-    assert out.read_text().strip() == "customer_id"  # header only, no rows
+    assert out.read_text().strip() == "customer_id,spell_start"  # header only
 
 
 def test_happy_path_writes_dated_csv(monkeypatch, tmp_path):
     monkeypatch.setattr(fd, "OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr(fd, "_fetch_candidates", lambda limit: ["11", "22", "33"])
+    monkeypatch.setattr(
+        fd, "_fetch_candidates",
+        lambda limit, cohort_date: [
+            ("11", "2026-05-30"), ("22", "2026-05-30"), ("33", "2026-05-29"),
+        ],
+    )
     summary = fd.do_work(_args())
     assert summary["n_written"] == 3
     out = tmp_path / "dpd1_candidates_2026-05-30.csv"
     lines = out.read_text().splitlines()
-    assert lines == ["customer_id", "11", "22", "33"]
+    assert lines == [
+        "customer_id,spell_start", "11,2026-05-30", "22,2026-05-30", "33,2026-05-29",
+    ]
 
 
 def test_dry_run_writes_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(fd, "OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr(fd, "_fetch_candidates", lambda limit: ["1", "2"])
+    monkeypatch.setattr(
+        fd, "_fetch_candidates",
+        lambda limit, cohort_date: [("1", "2026-05-30"), ("2", "2026-05-30")],
+    )
     summary = fd.do_work(_args(dry_run=True))
     assert summary["dry_run"] is True
     assert list(tmp_path.glob("*.csv")) == []

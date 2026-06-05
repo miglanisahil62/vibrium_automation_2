@@ -59,13 +59,17 @@ def _seg_prefix(index: int) -> str:
 
 
 # ─── Properties fetched once at FETCH_CT_PROPS ──────────────────────────────
-# dpd is REQUIRED (it gates eligibility and collection_view guarantees it for
-# the DPD-1 cohort). The classification properties are OPTIONAL ('?' suffix):
-# a customer missing one (e.g. an HNWA customer has no coll_bot_calling) is NOT
-# dropped as FETCH_FAILED — the absent prop becomes None and simply fails to
-# match any segment rule that references it.
+# ALL fetched properties are OPTIONAL ('?' suffix). The graph does NOT gate on
+# the CT `dpd` property at all — the authoritative DPD filter is membership in
+# collection_view (ageing 1-30; the fetch query), and the in-graph CONDITION was
+# relaxed to True. CT `dpd` is sparse/unreliable: it is the literal STRING 'NaN'
+# for ~19% of the X-bucket base, and `int('NaN')` raised → those customers were
+# dropped as FETCH_FAILED before classification (3,137 on 2026-06-05). Marking
+# every prop optional means an absent OR un-coercible value degrades to None
+# (see fetch_ct_props._parse_schema_type) and the customer still reaches the
+# segment rules instead of being silently zeroed out.
 FETCH_PROPERTIES = {
-    "dpd": "int",
+    "dpd": "int?",
     "coll_collection_risk_segmentation": "int?",
     "coll_notification_replied": "str?",
     "coll_bot_calling": "str?",
