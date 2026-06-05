@@ -99,7 +99,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a0000000-0000-4000-a000-000000000001",
@@ -217,9 +217,9 @@
     {
       "node_id": "a0000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "high_wa: Retry Counter (max 2 calls)",
+      "label": "high_wa: Call-day Counter (max 2 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 2
       },
       "edges": {
@@ -235,7 +235,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a0000000-0000-4000-a000-000000000001",
@@ -340,7 +343,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a1000000-0000-4000-a000-000000000001",
@@ -458,9 +461,9 @@
     {
       "node_id": "a1000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "mid_wa: Retry Counter (max 2 calls)",
+      "label": "mid_wa: Call-day Counter (max 2 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 2
       },
       "edges": {
@@ -476,7 +479,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a1000000-0000-4000-a000-000000000001",
@@ -581,7 +587,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a2000000-0000-4000-a000-000000000001",
@@ -699,9 +705,9 @@
     {
       "node_id": "a2000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "mid_nowa_1: Retry Counter (max 2 calls)",
+      "label": "mid_nowa_1: Call-day Counter (max 2 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 2
       },
       "edges": {
@@ -717,7 +723,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a2000000-0000-4000-a000-000000000001",
@@ -822,7 +831,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a3000000-0000-4000-a000-000000000001",
@@ -940,9 +949,9 @@
     {
       "node_id": "a3000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "mid_nowa_2: Retry Counter (max 3 calls)",
+      "label": "mid_nowa_2: Call-day Counter (max 3 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 3
       },
       "edges": {
@@ -958,7 +967,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a3000000-0000-4000-a000-000000000001",
@@ -1063,7 +1075,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a4000000-0000-4000-a000-000000000001",
@@ -1276,7 +1288,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a5000000-0000-4000-a000-000000000001",
@@ -1394,9 +1406,9 @@
     {
       "node_id": "a5000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "low_wa: Retry Counter (max 3 calls)",
+      "label": "low_wa: Call-day Counter (max 3 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 3
       },
       "edges": {
@@ -1412,7 +1424,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a5000000-0000-4000-a000-000000000001",
@@ -1517,7 +1532,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a6000000-0000-4000-a000-000000000001",
@@ -1635,9 +1650,9 @@
     {
       "node_id": "a6000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "low_nowa_1: Retry Counter (max 3 calls)",
+      "label": "low_nowa_1: Call-day Counter (max 3 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 3
       },
       "edges": {
@@ -1653,7 +1668,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a6000000-0000-4000-a000-000000000001",
@@ -1758,7 +1776,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a7000000-0000-4000-a000-000000000001",
@@ -1876,9 +1894,9 @@
     {
       "node_id": "a7000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "low_nowa_2: Retry Counter (max 4 calls)",
+      "label": "low_nowa_2: Call-day Counter (max 4 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 4
       },
       "edges": {
@@ -1894,7 +1912,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a7000000-0000-4000-a000-000000000001",
@@ -1999,7 +2020,7 @@
       "config": {
         "rotate_day_offset": 0,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index"
       },
       "edges": {
         "next": "a8000000-0000-4000-a000-000000000001",
@@ -2117,9 +2138,9 @@
     {
       "node_id": "a8000000-0000-4000-a000-000000000009",
       "type": "COUNTER",
-      "label": "high_nowa: Retry Counter (max 2 calls)",
+      "label": "high_nowa: Call-day Counter (max 2 days)",
       "config": {
-        "name": "attempts",
+        "name": "day_index",
         "limit": 2
       },
       "edges": {
@@ -2135,7 +2156,10 @@
       "config": {
         "rotate_day_offset": 1,
         "rotate_hours_key": "best_hours",
-        "rotate_index_key": "attempts"
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "attempts_today": 0
+        }
       },
       "edges": {
         "next": "a8000000-0000-4000-a000-000000000001",

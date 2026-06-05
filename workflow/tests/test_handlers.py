@@ -443,15 +443,45 @@ class TestFireVbCall:
         # The second call's side_effect mentions dedupe.
         assert "dedupe-hit" in (r2.side_effect or "")
 
-    def test_attempts_from_scratchpad(self, workflow_db, base_run: Run):
+    def test_attempts_from_scratchpad_v7_fallback(self, workflow_db, base_run: Run):
+        # v7 drain path: no fire_seq → falls back to `attempts`, no self-bump.
         base_run.scratchpad = {"attempts": 3}
         node = _node("FIRE_VB_CALL", {})
         with transaction(workflow_db):
-            fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+            result = fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
         row = workflow_db.execute(
             "SELECT attempt_count FROM wf_pending_actions"
         ).fetchone()
         assert row["attempt_count"] == 3
+        assert "fire_seq" not in result.scratchpad_patch  # v7 must not introduce it
+
+    def test_fire_seq_used_and_self_bumped_v8(self, workflow_db, base_run: Run):
+        # v8 path: fire_seq present → used as attempt_count AND bumped for the
+        # NEXT fire, so same-day reattempts at the same FIRE node never collide.
+        base_run.scratchpad = {"fire_seq": 2, "attempts": 99}
+        node = _node("FIRE_VB_CALL", {})
+        with transaction(workflow_db):
+            result = fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        row = workflow_db.execute(
+            "SELECT attempt_count FROM wf_pending_actions"
+        ).fetchone()
+        assert row["attempt_count"] == 2          # fire_seq wins over attempts
+        assert result.scratchpad_patch["fire_seq"] == 3   # self-bumped
+
+    def test_fire_seq_same_node_two_attempts_distinct_rows(self, workflow_db, base_run: Run):
+        # Two fires at the SAME node with the bumped fire_seq → two distinct rows
+        # (no dedupe-collision) — the core same-day-retry guarantee.
+        node = _node("FIRE_VB_CALL", {})
+        base_run.scratchpad = {"fire_seq": 0}
+        with transaction(workflow_db):
+            r1 = fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        base_run.scratchpad["fire_seq"] = r1.scratchpad_patch["fire_seq"]  # 1
+        with transaction(workflow_db):
+            fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        count = workflow_db.execute(
+            "SELECT COUNT(*) AS c FROM wf_pending_actions"
+        ).fetchone()["c"]
+        assert count == 2  # attempt_count 0 and 1 — both fired
 
     def test_dry_run_does_not_insert(self, workflow_db, base_run: Run):
         node = _node("FIRE_VB_CALL", {})

@@ -36,6 +36,9 @@ def test_counter_limit_equals_total_calls(total_calls):
     counter = by_id[pfx.format(0x09)]
     assert counter["type"] == "COUNTER"
     assert counter["config"]["limit"] == total_calls
+    # WS3 3-key split: the call-loop COUNTER counts CALL-DAYS (`day_index`), the
+    # rotation index — NOT `attempts` (which it was before the split).
+    assert counter["config"]["name"] == "day_index"
     # under_limit re-fires (loops back to FIRE via WAIT_RETRY); at_limit assigns.
     assert counter["edges"]["under_limit"] == pfx.format(0x0a)   # WAIT_RETRY
     assert by_id[pfx.format(0x0a)]["edges"]["next"] == pfx.format(0x01)  # → FIRE
@@ -86,7 +89,7 @@ def test_entry_wait_uses_best_hour_rotation():
         cfg = wait["config"]
         assert cfg["rotate_day_offset"] == int(seg["entry_offset_days"])
         assert cfg["rotate_hours_key"] == "best_hours"
-        assert cfg["rotate_index_key"] == "attempts"
+        assert cfg["rotate_index_key"] == "day_index"  # WS3 3-key split
         assert "relative" not in cfg  # rotation replaced the fixed-hour form
 
 

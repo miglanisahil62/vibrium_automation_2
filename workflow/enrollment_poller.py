@@ -1011,13 +1011,20 @@ def _run_locked(
                             wf.enrollment_key_template, cid, n,
                             spell_start=spell_map.get(cid),
                         )
-                        # WS5: seed best_hours so the WAIT_UNTIL rotation parks
-                        # each call-day at the customer's rotating best hour.
-                        # (FETCH_CT_PROPS overwrites the coll_* classification
-                        # keys at execution; best_hours is enrollment-only state.)
-                        seed_scratchpad = json.dumps(
-                            {"best_hours": _seed_best_hours(cid)}
-                        )
+                        # WS3/WS5: seed the 3 call-loop counters + best_hours.
+                        #   day_index     — call-DAY index (rotation + N-day budget)
+                        #   attempts_today — same-day reattempt count (≤3/day)
+                        #   fire_seq       — monotonic FIRE dedupe (unique per fire)
+                        # Seeding fire_seq is what marks a run as "v8-keyed" for the
+                        # cutover-safe FIRE handler. (FETCH_CT_PROPS overwrites the
+                        # coll_* classification keys at execution; these are
+                        # enrollment-only loop state.)
+                        seed_scratchpad = json.dumps({
+                            "best_hours": _seed_best_hours(cid),
+                            "day_index": 0,
+                            "attempts_today": 0,
+                            "fire_seq": 0,
+                        })
                         cur = conn.execute(
                             """
                             INSERT OR IGNORE INTO workflow_runs (

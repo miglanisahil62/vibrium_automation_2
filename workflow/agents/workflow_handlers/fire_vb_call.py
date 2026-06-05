@@ -63,7 +63,23 @@ def execute(
     row or hit the UNIQUE constraint (idempotent advance per the architecture
     Dedupe Key rule).
     """
-    attempt_count = int(run.scratchpad.get("attempts", 0) or 0)
+    # WS6 3-key split + cutover safety. The dedupe key is
+    # UNIQUE(run_id, node_id, attempt_count); same-day reattempts re-enter the
+    # SAME FIRE node, so attempt_count MUST differ per fire or the second fire
+    # silently dedupe-collides (INSERT OR IGNORE → no row → no call).
+    #   * v8 runs are enrolment-seeded with `fire_seq` (a globally-monotonic
+    #     per-run fire counter). FIRE reads it as attempt_count and self-bumps it,
+    #     so every fire (first-of-day OR same-day retry) gets a unique count.
+    #   * in-flight v7 runs (drain after the v8 cutover) have NO `fire_seq`; they
+    #     keyed on `attempts` (bumped once/day by the old COUNTER). Fall back to
+    #     `attempts` and do NOT introduce fire_seq, so a v7 run keeps its original
+    #     keying and can't collide with its own earlier fires.
+    if "fire_seq" in run.scratchpad:
+        attempt_count = int(run.scratchpad.get("fire_seq", 0) or 0)
+        fire_seq_patch = {"fire_seq": attempt_count + 1}
+    else:
+        attempt_count = int(run.scratchpad.get("attempts", 0) or 0)
+        fire_seq_patch = {}
     now_ist = _now_ist_str()
     cohort_name = f"workflow:{run.workflow_id}:v{run.version_id}"
 
@@ -72,7 +88,7 @@ def execute(
         # (executor handles the log row); do NOT INSERT.
         return NodeResult(
             next_edge="queued",
-            scratchpad_patch={"last_fire_at": now_ist},
+            scratchpad_patch={"last_fire_at": now_ist, **fire_seq_patch},
             side_effect=(
                 f"DRY-RUN would INSERT wf_pending_actions "
                 f"cid={run.customer_id} run_id={run.id} node_id={node.node_id} "
@@ -122,7 +138,11 @@ def execute(
 
     return NodeResult(
         next_edge="queued",
-        scratchpad_patch={"last_fire_at": now_ist},
+        # fire_seq_patch self-bumps the monotonic counter (v8). It rides the
+        # executor's atomic advance+commit, so a re-ticked fire (crash before
+        # commit) re-reads the un-bumped value, dedupe-hits idempotently, and
+        # bumps exactly once — no double-increment.
+        scratchpad_patch={"last_fire_at": now_ist, **fire_seq_patch},
         side_effect=side_effect,
         ready_at_ist=None,
     )

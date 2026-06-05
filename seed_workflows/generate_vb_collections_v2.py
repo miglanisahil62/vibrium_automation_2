@@ -324,8 +324,14 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             {
                 "node_id": COUNTER_NODE,
                 "type": "COUNTER",
-                "label": f"{p}: Retry Counter (max {total_calls} calls)",
-                "config": {"name": "attempts", "limit": total_calls},
+                "label": f"{p}: Call-day Counter (max {total_calls} days)",
+                # WS3 3-key split: this counts CALL-DAYS (one tick per day), not
+                # fires. `day_index` is the rotation index (best_hours[day_index])
+                # AND the N-day budget. Same-day reattempts use `attempts_today`
+                # and the monotonic FIRE dedupe uses `fire_seq` — three distinct
+                # keys so a same-day retry can't burn the day budget or collide
+                # on the FIRE UNIQUE(run,node,attempt_count).
+                "config": {"name": "day_index", "limit": total_calls},
                 "edges": {
                     "under_limit": WAIT_RETRY,
                     "at_limit":    ASSIGN_LIMIT,    # genuine budget exhaustion → max_attempts_reached
@@ -336,14 +342,17 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
                 "node_id": WAIT_RETRY,
                 "type": "WAIT_UNTIL",
                 "label": f"{p}: Wait — Retry next day (best-hour)",
-                # WS4: next call-day parks at the NEXT best hour. The COUNTER
-                # above bumped `attempts` (the call-day index), so rotation reads
-                # best_hours[attempts % len] → day 2 = #2 best hour, day 3 = #3,
-                # wrapping for N>len. day_offset=1 (tomorrow).
+                # WS3/WS4: next call-day parks at the NEXT best hour. The COUNTER
+                # above bumped `day_index` (the call-day index), so rotation reads
+                # best_hours[day_index % len] → day 2 = #2 best hour, day 3 = #3,
+                # wrapping for N>len. day_offset=1 (tomorrow). reset_keys zeroes
+                # `attempts_today` on the day rollover so the next day's same-day
+                # reattempt budget (≤3) starts fresh.
                 "config": {
                     "rotate_day_offset": 1,
                     "rotate_hours_key": "best_hours",
-                    "rotate_index_key": "attempts",
+                    "rotate_index_key": "day_index",
+                    "reset_keys": {"attempts_today": 0},
                 },
                 "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
             },
@@ -529,7 +538,7 @@ def build_graph() -> dict:
             "config": {
                 "rotate_day_offset": offset,
                 "rotate_hours_key": "best_hours",
-                "rotate_index_key": "attempts",
+                "rotate_index_key": "day_index",
             },
             "edges": {
                 "next":  seg_fire,
