@@ -44,6 +44,11 @@ _IST = ZoneInfo("Asia/Kolkata")
 _IST_TS_FMT = "%Y-%m-%d %H:%M:%S"
 _DATE_FMT = "%Y-%m-%d"
 
+# Population fallback best-hours (mirrors call_timing's default) — used only when
+# a run has no usable best_hours in scratchpad. All within the RBI 08:00-18:59
+# window so a rotated park can never aim outside it.
+_DEFAULT_HOURS = (10, 13, 16)
+
 # Relative format grammar (case-sensitive, single-spaces only):
 #   "T+<N> day"               → +N days, midnight
 #   "T+<N> day at HH:MM"      → +N days at HH:MM
@@ -112,6 +117,61 @@ def _error(msg: str, side: str) -> NodeResult:
     )
 
 
+def _rotate_target(node: NodeConfig, run: Run, now: datetime) -> "tuple[Optional[datetime], Optional[str]]":
+    """WS4 best-hour rotation. Park the day's call at the customer's rotating
+    best hour: ``best_hours[day_index % len(best_hours)]`` on the day
+    ``today + day_offset``.
+
+    Config: ``{"rotate_day_offset": int, "rotate_hours_key": str,
+               "rotate_index_key": str}``.
+
+    Returns ``(target_datetime, None)`` on success or ``(None, error_msg)``.
+    Robust to a missing/empty/garbage best_hours list (falls back to the
+    population default) and a non-int day_index (treats as 0) — a parked call
+    must never crash on soft scratchpad state. The chosen hour is clamped into
+    [8,18] (the pre_call_gate is the hard RBI enforcer; this is belt-and-braces
+    so rotation can't aim a park outside the window).
+    """
+    try:
+        day_offset = int(node.config.get("rotate_day_offset", 0))
+    except (TypeError, ValueError):  # stashfin-lint: ignore  # documented contract: bad config returns (None, err) → caller routes to the 'error' edge with wait_error, not a silent value default.
+        return None, "invalid_rotate_day_offset"
+    if day_offset < 0:
+        return None, "invalid_rotate_day_offset"
+
+    hours_key = node.config.get("rotate_hours_key", "best_hours")
+    index_key = node.config.get("rotate_index_key", "day_index")
+
+    raw_hours = run.scratchpad.get(hours_key)
+    hours: list[int] = []
+    if isinstance(raw_hours, (list, tuple)):
+        for h in raw_hours:
+            try:
+                hi = int(h)
+            except (TypeError, ValueError):
+                continue
+            if 8 <= hi <= 18:
+                hours.append(hi)
+    if not hours:
+        hours = list(_DEFAULT_HOURS)  # population fallback
+
+    try:
+        day_index = int(run.scratchpad.get(index_key, 0) or 0)
+    except (TypeError, ValueError):
+        # Documented soft-state contract: a non-int day_index must not crash a
+        # parked call. Log so a genuinely corrupt scratchpad is still visible.
+        log.warning("WAIT_UNTIL rotate: non-int %s=%r in run scratchpad — using 0",
+                    index_key, run.scratchpad.get(index_key))
+        day_index = 0
+    if day_index < 0:
+        day_index = 0
+
+    hour = hours[day_index % len(hours)]
+    hour = max(8, min(18, hour))  # clamp into RBI window (defensive)
+    target_date = (now + timedelta(days=day_offset)).date()
+    return datetime(target_date.year, target_date.month, target_date.day, hour, 0, 0), None
+
+
 def execute(
     node: NodeConfig,
     run: Run,
@@ -122,17 +182,29 @@ def execute(
     """Compute park deadline; set ``run.ready_at_ist``; return ``next``."""
     relative = node.config.get("relative")
     absolute_key = node.config.get("absolute")
+    is_rotate = "rotate_hours_key" in node.config or "rotate_day_offset" in node.config
 
-    if relative and absolute_key:
+    if sum(bool(x) for x in (relative, absolute_key, is_rotate)) > 1:
         return _error(
-            "both 'relative' and 'absolute' set; pick one",
+            "more than one of 'relative'/'absolute'/'rotate_*' set; pick one",
             "WAIT_UNTIL misconfigured: ambiguous spec",
         )
 
     now = _now_ist()
     target: Optional[datetime] = None
 
-    if relative:
+    # WS4: optional reset keys applied on the exit edge (e.g. attempts_today=0 on
+    # a day rollover). Parsed up front so both park + advance paths emit it.
+    reset_patch: dict = {}
+    raw_reset = node.config.get("reset_keys")
+    if isinstance(raw_reset, dict):
+        reset_patch = dict(raw_reset)
+
+    if is_rotate:
+        target, rot_err = _rotate_target(node, run, now)
+        if rot_err is not None:
+            return _error(rot_err, f"WAIT_UNTIL rotate error: {rot_err}")
+    elif relative:
         if not isinstance(relative, str):
             return _error(
                 "invalid_relative_format",
@@ -164,7 +236,7 @@ def execute(
             )
     else:
         return _error(
-            "missing 'relative' or 'absolute' config",
+            "missing 'relative'/'absolute'/'rotate_*' config",
             "WAIT_UNTIL misconfigured: no spec",
         )
 
@@ -172,28 +244,29 @@ def execute(
     late = target <= now
 
     if not late:
-        # Deadline is in the future — park the run.
+        # Deadline is in the future — park the run. reset_patch (e.g.
+        # attempts_today=0 on a day rollover) is applied on the park edge so the
+        # reset lands when the next day's wait begins, regardless of late/early.
         run.status = "WAITING"
         run.ready_at_ist = ready_at
         side = f"WAIT_UNTIL parked until {ready_at}"
         return NodeResult(
             next_edge="next",
-            scratchpad_patch={},
+            scratchpad_patch=dict(reset_patch),
             side_effect=side,
             ready_at_ist=ready_at,
         )
 
-    # Deadline already passed — advance immediately.
-    # The run was loaded from DB as status='WAITING'; _persist_run_advance
-    # branches on run.status: WAITING=park, ACTIVE=advance. We MUST explicitly
-    # set ACTIVE here so the executor follows next_edge to FIRE_VB_CALL.
-    # Not setting it (leaving WAITING from the load) would re-park every tick.
+    # Deadline already passed — advance immediately (best-hour already gone today
+    # → "call ASAP in the remaining window", per WS4). The run was loaded as
+    # status='WAITING'; _persist_run_advance branches on run.status: WAITING=park,
+    # ACTIVE=advance. We MUST set ACTIVE so the executor follows next_edge to FIRE.
     run.status = "ACTIVE"
     run.ready_at_ist = None
     side = f"WAIT_UNTIL deadline {ready_at} already passed — advancing immediately"
     return NodeResult(
         next_edge="next",
-        scratchpad_patch={},
+        scratchpad_patch=dict(reset_patch),
         side_effect=side,
         ready_at_ist=None,
     )

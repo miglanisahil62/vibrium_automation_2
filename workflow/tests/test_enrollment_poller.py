@@ -533,3 +533,68 @@ def test_condition_undefined_name_skips_candidate(
     stats = ep.run(workflow_db, now=fixed_now)
     assert stats["enrolled_total"] == 1
     assert stats["matched_total"] == 1
+
+
+# ---- WS5 best-hour seeding (master-auditor WS3-7 P1-1 / P2-1) ----
+
+def _install_fake_call_timing(monkeypatch, *, table: dict, recorder: list):
+    """Inject a fake external.vibrium_automation_scripts.call_timing whose
+    best_call_hours mimics the real INT-keyed model + HourScore NamedTuple.
+    ``recorder`` captures the (value, type) actually passed so we can prove the
+    int-cast at the call boundary (the P1-1 regression: a str silently misses)."""
+    import sys
+    import types
+    from collections import namedtuple
+
+    HourScore = namedtuple("HourScore", ["hour", "p_pickup", "source"])
+
+    def best_call_hours(customer_id, n=3):
+        recorder.append((customer_id, type(customer_id).__name__))
+        scored = table.get(customer_id)  # INT-keyed, like the real model
+        if not scored:
+            return []
+        return [HourScore(h, 0.5, "bot") for h in scored][:n]
+
+    fake = types.ModuleType("external.vibrium_automation_scripts.call_timing")
+    fake.best_call_hours = best_call_hours
+    monkeypatch.setitem(sys.modules,
+                        "external.vibrium_automation_scripts.call_timing", fake)
+
+
+def test_seed_best_hours_extracts_hours_and_casts_int_key(monkeypatch):
+    rec: list = []
+    # Model keyed by INT 12345 → a str "12345" lookup would MISS (the bug).
+    _install_fake_call_timing(monkeypatch, table={12345: [14, 9, 17]}, recorder=rec)
+    out = ep._seed_best_hours("12345")
+    assert out == [14, 9, 17]            # .hour extracted, in order
+    assert rec and rec[0][1] == "int"    # called with an INT, not str (P1-1)
+
+
+def test_seed_best_hours_float_stored_id(monkeypatch):
+    rec: list = []
+    _install_fake_call_timing(monkeypatch, table={12345: [10, 16]}, recorder=rec)
+    assert ep._seed_best_hours("12345.0") == [10, 16]   # '12345.0' → 12345
+    assert rec[0][0] == 12345
+
+
+def test_seed_best_hours_filters_out_of_window(monkeypatch):
+    _install_fake_call_timing(monkeypatch, table={1: [23, 9, 16]}, recorder=[])
+    # 23 is outside [8,18] → dropped → [9,16].
+    assert ep._seed_best_hours("1") == [9, 16]
+
+
+def test_seed_best_hours_dedupes(monkeypatch):
+    _install_fake_call_timing(monkeypatch, table={1: [9, 9, 16]}, recorder=[])
+    # duplicate 9 collapses, order preserved → [9,16].
+    assert ep._seed_best_hours("1") == [9, 16]
+
+
+def test_seed_best_hours_fallback_when_no_history(monkeypatch):
+    _install_fake_call_timing(monkeypatch, table={}, recorder=[])
+    assert ep._seed_best_hours("999") == ep.DEFAULT_BEST_HOURS
+
+
+def test_seed_best_hours_nonnumeric_id_falls_back(monkeypatch):
+    _install_fake_call_timing(monkeypatch, table={1: [11]}, recorder=[])
+    # int(float("abc")) raises → outer except → population default, no crash.
+    assert ep._seed_best_hours("abc") == ep.DEFAULT_BEST_HOURS

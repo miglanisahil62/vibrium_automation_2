@@ -73,14 +73,21 @@ def test_classification_is_first_match_wins_with_error_fallthrough():
         assert classify["edges"]["error"] == expected_fallthrough
 
 
-def test_entry_wait_relative_matches_segment_strategy():
+def test_entry_wait_uses_best_hour_rotation():
+    """WS4: entry waits park at the customer's rotating best hour (day 1 =
+    best_hours[attempts=0]), not a fixed entry_time. day_offset carries the
+    segment's entry_offset_days; the index key is the existing `attempts`
+    call-day counter."""
     graph = gen.build_graph()
     by_id = {n["node_id"]: n for n in graph["nodes"]}
     for i, seg in enumerate(gen.SEGMENTS):
         wait = by_id[gen.r(gen._ENTRY_WAIT_BASE + i)]
         assert wait["type"] == "WAIT_UNTIL"
-        expected = f"T+{seg['entry_offset_days']} day at {seg['entry_time']}"
-        assert wait["config"]["relative"] == expected
+        cfg = wait["config"]
+        assert cfg["rotate_day_offset"] == int(seg["entry_offset_days"])
+        assert cfg["rotate_hours_key"] == "best_hours"
+        assert cfg["rotate_index_key"] == "attempts"
+        assert "relative" not in cfg  # rotation replaced the fixed-hour form
 
 
 # ----------------------------------------------------------- lint + validation

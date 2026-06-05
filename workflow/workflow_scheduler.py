@@ -517,8 +517,21 @@ def run(
             WHERE pa.status='PENDING'
               AND pa.scheduled_at_ist <= ?
             ORDER BY
+                -- 1) spillover: yesterday's un-fired rows clear first.
                 CASE WHEN substr(pa.scheduled_at_ist, 1, 10) < ? THEN 0 ELSE 1 END,
+                -- 2) WS7: HIGH-RISK FIRST. coll_collection_risk_segmentation is
+                --    written to the run scratchpad by FETCH_CT_PROPS (lower band =
+                --    higher risk: 0-4 High → 5-7 Mid → 8-10 Low). Runs with no
+                --    risk value (NULL) sort LAST so a missing band never jumps
+                --    the queue ahead of a known high-risk customer.
+                CASE WHEN json_extract(wr.scratchpad_json,
+                          '$.coll_collection_risk_segmentation') IS NULL
+                     THEN 1 ELSE 0 END,
+                CAST(json_extract(wr.scratchpad_json,
+                          '$.coll_collection_risk_segmentation') AS INTEGER),
+                -- 3) first-attempt breadth: everyone's first call before reattempts.
                 CASE WHEN pa.attempt_count = 0 THEN 0 ELSE 1 END,
+                -- 4) oldest scheduled first.
                 pa.scheduled_at_ist
             LIMIT ?
             """,

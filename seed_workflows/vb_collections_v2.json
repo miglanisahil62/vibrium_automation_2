@@ -95,9 +95,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000020",
       "type": "WAIT_UNTIL",
-      "label": "high_wa \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "high_wa \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a0000000-0000-4000-a000-000000000001",
@@ -229,9 +231,11 @@
     {
       "node_id": "a0000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "high_wa: Wait \u2014 Retry T+1",
+      "label": "high_wa: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a0000000-0000-4000-a000-000000000001",
@@ -332,9 +336,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000021",
       "type": "WAIT_UNTIL",
-      "label": "mid_wa \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "mid_wa \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a1000000-0000-4000-a000-000000000001",
@@ -466,9 +472,11 @@
     {
       "node_id": "a1000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "mid_wa: Wait \u2014 Retry T+1",
+      "label": "mid_wa: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a1000000-0000-4000-a000-000000000001",
@@ -569,9 +577,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000022",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_1 \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "mid_nowa_1 \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a2000000-0000-4000-a000-000000000001",
@@ -703,9 +713,11 @@
     {
       "node_id": "a2000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_1: Wait \u2014 Retry T+1",
+      "label": "mid_nowa_1: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a2000000-0000-4000-a000-000000000001",
@@ -806,9 +818,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000023",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_2 \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "mid_nowa_2 \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a3000000-0000-4000-a000-000000000001",
@@ -940,9 +954,11 @@
     {
       "node_id": "a3000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_2: Wait \u2014 Retry T+1",
+      "label": "mid_nowa_2: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a3000000-0000-4000-a000-000000000001",
@@ -1043,9 +1059,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000024",
       "type": "WAIT_UNTIL",
-      "label": "mid_nowa_3 \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "mid_nowa_3 \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a4000000-0000-4000-a000-000000000001",
@@ -1254,9 +1272,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000025",
       "type": "WAIT_UNTIL",
-      "label": "low_wa \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "low_wa \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a5000000-0000-4000-a000-000000000001",
@@ -1388,9 +1408,11 @@
     {
       "node_id": "a5000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "low_wa: Wait \u2014 Retry T+1",
+      "label": "low_wa: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a5000000-0000-4000-a000-000000000001",
@@ -1491,9 +1513,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000026",
       "type": "WAIT_UNTIL",
-      "label": "low_nowa_1 \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "low_nowa_1 \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a6000000-0000-4000-a000-000000000001",
@@ -1625,9 +1649,11 @@
     {
       "node_id": "a6000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "low_nowa_1: Wait \u2014 Retry T+1",
+      "label": "low_nowa_1: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a6000000-0000-4000-a000-000000000001",
@@ -1728,9 +1754,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000027",
       "type": "WAIT_UNTIL",
-      "label": "low_nowa_2 \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "low_nowa_2 \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a7000000-0000-4000-a000-000000000001",
@@ -1862,9 +1890,11 @@
     {
       "node_id": "a7000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "low_nowa_2: Wait \u2014 Retry T+1",
+      "label": "low_nowa_2: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a7000000-0000-4000-a000-000000000001",
@@ -1965,9 +1995,11 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000028",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa \u2014 Entry Wait (T+0 day at 08:00)",
+      "label": "high_nowa \u2014 Entry Wait (best-hour, T+0)",
       "config": {
-        "relative": "T+0 day at 08:00"
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a8000000-0000-4000-a000-000000000001",
@@ -2099,9 +2131,11 @@
     {
       "node_id": "a8000000-0000-4000-a000-00000000000a",
       "type": "WAIT_UNTIL",
-      "label": "high_nowa: Wait \u2014 Retry T+1",
+      "label": "high_nowa: Wait \u2014 Retry next day (best-hour)",
       "config": {
-        "relative": "T+1 day at 08:00"
+        "rotate_day_offset": 1,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "attempts"
       },
       "edges": {
         "next": "a8000000-0000-4000-a000-000000000001",

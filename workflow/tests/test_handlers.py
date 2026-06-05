@@ -914,6 +914,61 @@ class TestWaitUntil:
         assert base_run.status == "ACTIVE"       # executor will advance, not park
         assert "already passed" in (result.side_effect or "").lower()
 
+    # ---- WS4 best-hour rotation ----
+    def _rotate_node(self, day_offset=1, **extra):
+        cfg = {
+            "rotate_day_offset": day_offset,
+            "rotate_hours_key": "best_hours",
+            "rotate_index_key": "attempts",
+        }
+        cfg.update(extra)
+        return _node("WAIT_UNTIL", cfg)
+
+    def test_rotate_picks_indexed_hour_tomorrow(self, base_run: Run):
+        # attempts=1 → best_hours[1]=14; day_offset=1 → parks tomorrow 14:00.
+        base_run.scratchpad = {"best_hours": [9, 14, 17], "attempts": 1}
+        result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        assert parsed.hour == 14
+        assert base_run.status == "WAITING"
+
+    def test_rotate_wraps_index(self, base_run: Run):
+        # attempts=4, 3 hours → 4 % 3 = 1 → best_hours[1]=14.
+        base_run.scratchpad = {"best_hours": [9, 14, 17], "attempts": 4}
+        result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        assert parsed.hour == 14
+
+    def test_rotate_reset_keys_applied(self, base_run: Run):
+        # Day rollover resets attempts_today=0 via reset_keys on the exit edge.
+        base_run.scratchpad = {"best_hours": [9, 14, 17], "attempts": 0,
+                               "attempts_today": 2}
+        node = self._rotate_node(reset_keys={"attempts_today": 0})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.scratchpad_patch.get("attempts_today") == 0
+
+    def test_rotate_fallback_when_best_hours_absent(self, base_run: Run):
+        # No best_hours → population default [10,13,16]; attempts=0 → 10:00.
+        base_run.scratchpad = {"attempts": 0}
+        result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        assert parsed.hour == 10
+
+    def test_rotate_ignores_out_of_window_hours(self, base_run: Run):
+        # 23 is outside [8,18] → filtered; remaining [9,16]; attempts=1 → 16.
+        base_run.scratchpad = {"best_hours": [23, 9, 16], "attempts": 1}
+        result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
+        parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
+        # after filtering 23: [9,16]; index 1 % 2 = 1 → 16
+        assert parsed.hour == 16
+
+    def test_rotate_ambiguous_config_errors(self, base_run: Run):
+        # rotate + relative both set → error edge.
+        node = _node("WAIT_UNTIL", {"rotate_day_offset": 1, "relative": "T+1 day"})
+        result = wait_mod.execute(node, base_run, ctx=None, txn=None)
+        assert result.next_edge == "error"
+
 
 # --------------------------------------------------------------------------
 # BRANCH_ON_DISPOSITION (Phase 4b — critical surface)

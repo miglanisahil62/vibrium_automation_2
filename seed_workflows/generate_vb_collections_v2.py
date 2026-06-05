@@ -335,8 +335,16 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             {
                 "node_id": WAIT_RETRY,
                 "type": "WAIT_UNTIL",
-                "label": f"{p}: Wait — Retry T+1",
-                "config": {"relative": "T+1 day at 08:00"},
+                "label": f"{p}: Wait — Retry next day (best-hour)",
+                # WS4: next call-day parks at the NEXT best hour. The COUNTER
+                # above bumped `attempts` (the call-day index), so rotation reads
+                # best_hours[attempts % len] → day 2 = #2 best hour, day 3 = #3,
+                # wrapping for N>len. day_offset=1 (tomorrow).
+                "config": {
+                    "rotate_day_offset": 1,
+                    "rotate_hours_key": "best_hours",
+                    "rotate_index_key": "attempts",
+                },
                 "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
             },
         ]
@@ -495,7 +503,6 @@ def build_graph() -> dict:
         fallthrough = r(_IDX_TERM_OOS) if is_last else r(_CLASSIFY_BASE + i + 1)
 
         offset = int(seg["entry_offset_days"])
-        entry_relative = f"T+{offset} day at {seg['entry_time']}"
 
         nodes.append({
             "node_id": classify_id,
@@ -508,11 +515,22 @@ def build_graph() -> dict:
                 "error": fallthrough,
             },
         })
+        # WS4 best-hour rotation: day 1's call parks at the customer's #1 best
+        # hour (best_hours[attempts % len], attempts=0 at entry → index 0); if
+        # that hour already passed today the WAIT_UNTIL advances ASAP (call in the
+        # remaining window). `attempts` is the existing per-call-day counter (the
+        # COUNTER bumps it on each RETRY), so it doubles as the rotation index —
+        # no new key needed. best_hours is seeded at enrollment (population
+        # default [10,13,16] if a customer has no history).
         nodes.append({
             "node_id": entry_wait_id,
             "type": "WAIT_UNTIL",
-            "label": f"{seg['name']} — Entry Wait ({entry_relative})",
-            "config": {"relative": entry_relative},
+            "label": f"{seg['name']} — Entry Wait (best-hour, T+{offset})",
+            "config": {
+                "rotate_day_offset": offset,
+                "rotate_hours_key": "best_hours",
+                "rotate_index_key": "attempts",
+            },
             "edges": {
                 "next":  seg_fire,
                 "error": r(_IDX_TERM_WAIT_ERR),

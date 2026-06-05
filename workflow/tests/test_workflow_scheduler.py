@@ -587,3 +587,59 @@ def test_cli_dry_run_empty_db(tmp_path):
     finally:
         wfs._default_trigger, wfs._default_gate_check, wfs._default_is_callable_now = saved
     assert rc == 0
+
+
+# --------------------------------------------------------------- 12. WS7 risk-first
+
+def _insert_run_with_risk(wf_db_path, *, run_id, cid, risk, sched_minutes=-5):
+    """Insert one ACTIVE run with a risk value in scratchpad + a PENDING fire."""
+    conn = sqlite3.connect(str(wf_db_path))
+    try:
+        now = _now_str()
+        conn.execute(
+            "INSERT OR IGNORE INTO workflows "
+            "(id, name, status, active_version_id, shadow_mode, created_at_ist, created_by) "
+            "VALUES (1, 'test_wf', 'ACTIVE', 1, 0, ?, 'test')", (now,))
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_versions "
+            "(id, workflow_id, version, graph_json, created_at_ist, created_by) "
+            "VALUES (1, 1, 1, '{}', ?, 'test')", (now,))
+        scratch = json.dumps({} if risk is None
+                             else {"coll_collection_risk_segmentation": risk})
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_runs "
+            "(id, workflow_id, version_id, customer_id, status, scratchpad_json, enrolled_at_ist) "
+            "VALUES (?, 1, 1, ?, 'ACTIVE', ?, ?)", (run_id, str(cid), scratch, now))
+        sched = (datetime.now(IST) + timedelta(minutes=sched_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        # attempt_count=0 for all so the breadth tiebreaker is neutral; risk decides.
+        conn.execute(
+            "INSERT INTO wf_pending_actions "
+            "(run_id, node_id, attempt_count, customer_id, scheduled_at_ist, status, cohort_name, created_at_ist) "
+            "VALUES (?, 'node_a', 0, ?, ?, 'PENDING', 'test_cohort', ?)",
+            (run_id, str(cid), sched, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_risk_first_ordering_high_risk_fires_under_tight_cap(dbs):
+    """WS7: with only 1 unit of headroom, the HIGH-risk (low band) customer
+    must fire before mid/low/NULL-risk peers."""
+    wf, vb = dbs
+    # low-risk (8), high-risk (2), no-risk (NULL) — naive id/time order would
+    # pick the low-risk one first; risk-first must pick the high-risk one.
+    _insert_run_with_risk(wf, run_id=1, cid=7000001, risk=8)
+    _insert_run_with_risk(wf, run_id=2, cid=7000002, risk=2)
+    _insert_run_with_risk(wf, run_id=3, cid=7000003, risk=None)
+
+    trigger = _ok_trigger()
+    stats = wfs.run(
+        workflow_db_path=wf, vibrium_db_path=vb,
+        trigger_fn=trigger, gate_check_fn=_ok_gate(),
+        is_callable_now_fn=_ok_window(), record_fire_fn=MagicMock(),
+        hourly_call_cap=1,   # only ONE fire allowed this tick
+    )
+    assert stats["fired"] == 1
+    fired_cids = [str(c.args[0] if c.args else c.kwargs.get("customer_id"))
+                  for c in trigger.call_args_list]
+    assert fired_cids == ["7000002"], f"expected high-risk first, got {fired_cids}"

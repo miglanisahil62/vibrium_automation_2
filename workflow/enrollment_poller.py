@@ -527,6 +527,48 @@ def _profile_to_scratchpad(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# WS5 — best-hour rotation seed. Population fallback when a customer has no
+# call-timing history (mirrors call_timing's default + wait_until._DEFAULT_HOURS).
+DEFAULT_BEST_HOURS = [10, 13, 16]
+
+
+def _seed_best_hours(customer_id: str) -> list[int]:
+    """Return the customer's top best-call HOURS as a plain int list for the
+    run's scratchpad (consumed by the WAIT_UNTIL best-hour rotation, WS4).
+
+    ``best_call_hours()`` returns ``list[HourScore]`` (a NamedTuple), NOT ints —
+    extract ``.hour`` (master-auditor WS3-7 P0-2). Every hour is clamped into the
+    RBI window [8,18] and de-duplicated order-preserved. Any failure (missing
+    parquet, import error in a CI box, bad row) falls back to the population
+    default — a missing timing model must never block enrollment.
+    """
+    try:
+        from external.vibrium_automation_scripts.call_timing import (  # type: ignore
+            best_call_hours,
+        )
+        # best_call_hours' timing dict is keyed by INT customer_id — passing a
+        # str silently misses → every customer falls back to DEFAULT_HOURS and
+        # the personalization is dead (master-auditor WS3-7 P1-1). Cast via float
+        # to also absorb a float-stored '12345.0' id; non-numeric → ValueError →
+        # the outer except → population default (correct degradation).
+        scored = best_call_hours(int(float(str(customer_id).strip())))
+        hours: list[int] = []
+        for hs in scored or []:
+            # HourScore.hour, but tolerate a raw int too (defensive).
+            h = getattr(hs, "hour", hs)
+            try:
+                hi = int(h)
+            except (TypeError, ValueError):
+                continue
+            if 8 <= hi <= 18 and hi not in hours:
+                hours.append(hi)
+        return hours or list(DEFAULT_BEST_HOURS)
+    except Exception as exc:  # noqa: BLE001 — timing is best-effort; never block enrol
+        log.warning("best_call_hours failed for cid=%s (%s) — population default",
+                    customer_id, exc)
+        return list(DEFAULT_BEST_HOURS)
+
+
 # ------------------------------------------------------------------ Enrollment-key
 
 
@@ -969,6 +1011,13 @@ def _run_locked(
                             wf.enrollment_key_template, cid, n,
                             spell_start=spell_map.get(cid),
                         )
+                        # WS5: seed best_hours so the WAIT_UNTIL rotation parks
+                        # each call-day at the customer's rotating best hour.
+                        # (FETCH_CT_PROPS overwrites the coll_* classification
+                        # keys at execution; best_hours is enrollment-only state.)
+                        seed_scratchpad = json.dumps(
+                            {"best_hours": _seed_best_hours(cid)}
+                        )
                         cur = conn.execute(
                             """
                             INSERT OR IGNORE INTO workflow_runs (
@@ -976,11 +1025,12 @@ def _run_locked(
                               enrollment_key, current_node_id, current_node_type,
                               entered_node_at_ist, status, scratchpad_json,
                               enrolled_at_ist, updated_at_ist
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', '{}', ?, ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
                             """,
                             (
                                 wf.id, wf.active_version_id, cid, ek,
-                                enroll_node_id, "ENROLL", now_str, now_str, now_str,
+                                enroll_node_id, "ENROLL", now_str,
+                                seed_scratchpad, now_str, now_str,
                             ),
                         )
                         if cur.rowcount == 1:
