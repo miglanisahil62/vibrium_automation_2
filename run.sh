@@ -95,8 +95,10 @@ case "${MODE}" in
         TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
     self_cure)
         TIMEOUT_SEC=300 ;;  # WS14 standalone self-cure — not routed via orchestrator
+    whatsapp)
+        TIMEOUT_SEC=600 ;;  # WS9 standalone WhatsApp parity dispatcher
     *)
-        echo "unknown mode '${MODE}' (executor|scheduler|ingest|prefetch|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer|self_cure)" >&2
+        echo "unknown mode '${MODE}' (executor|scheduler|ingest|prefetch|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer|self_cure|whatsapp)" >&2
         exit 2 ;;
 esac
 
@@ -107,6 +109,12 @@ if [[ "${MODE}" == "agent_assignment_emailer" || "${MODE}" == "enrollment_funnel
     timeout --kill-after=30 "${TIMEOUT_SEC}" \
         python3 "${BASE_DIR}/scripts/${MODE}.py" \
             --workflow-db "${WORKFLOW_DB}" \
+            >> "${LOG_FILE}" 2>&1
+elif [[ "${MODE}" == "whatsapp" ]]; then
+    # WS9 — workflow WhatsApp dispatcher. Reads its DB paths + WA config from env
+    # (WF_WORKFLOW_DB / WF_VIBRIUM_DB / WF_ADHOC_CONFIG) so no --workflow-db arg.
+    timeout --kill-after=30 "${TIMEOUT_SEC}" \
+        python3 "${BASE_DIR}/scripts/workflow_whatsapp.py" \
             >> "${LOG_FILE}" 2>&1
 else
     # ${FLAGS[@]+...} is the set -u-safe empty-array expansion (modes like ingest
