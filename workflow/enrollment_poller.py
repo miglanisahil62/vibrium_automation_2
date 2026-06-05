@@ -78,7 +78,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # Per-tick global cap. After this many enrollments have been inserted across
 # all workflows in this tick, the poller stops processing any further workflow.
-MAX_NEW_ENROLLMENTS_PER_TICK = 200
+MAX_NEW_ENROLLMENTS_PER_TICK = int(os.environ.get("WF_MAX_ENROLL_PER_TICK", "200"))
 
 # Per-workflow hard-abort threshold. If, after evaluating CT profiles, the
 # *number of matched candidates* (before any cap is applied) for a single
