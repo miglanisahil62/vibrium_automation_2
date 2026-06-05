@@ -246,10 +246,12 @@ def _insert_decision_log(
     comment_create_date: str,
     notes: str,
 ) -> None:
-    """Append a wf_decision_log row."""
+    """Append a wf_decision_log row (idempotent — migration 006 UNIQUE index +
+    OR IGNORE makes a watermark replay / duplicate-comment a no-op, keyed on
+    (run_id, node_id, attempt_count, COALESCE(comment_id,''))."""
     conn.execute(
         """
-        INSERT INTO wf_decision_log (
+        INSERT OR IGNORE INTO wf_decision_log (
             ts_ist, comment_id, customer_id, run_id, node_id, attempt_count,
             disposition, sub_disposition, action_class, comment_create_date, notes
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
