@@ -25,6 +25,7 @@ from workflow.agents.workflow_handlers.counter import execute as _counter
 from workflow.agents.workflow_handlers.enroll import execute as _enroll
 from workflow.agents.workflow_handlers.fetch_ct_props import execute as _fetch_ct_props
 from workflow.agents.workflow_handlers.fire_vb_call import execute as _fire_vb_call
+from workflow.agents.workflow_handlers.same_day_gate import execute as _same_day_gate
 from workflow.agents.workflow_handlers.set_ct_prop import execute as _set_ct_prop
 from workflow.agents.workflow_handlers.switch import execute as _switch
 from workflow.agents.workflow_handlers.terminate import execute as _terminate
@@ -47,6 +48,8 @@ REGISTRY: dict = {
     "WAIT_UNTIL": _wait_until,
     "BRANCH_ON_DISPOSITION": _branch_on_disposition,
     "COUNTER": _counter,
+    # WS3 same-day-retry decision node (no-connect → retry today vs next day)
+    "SAME_DAY_GATE": _same_day_gate,
     # Phase 4c — 2 side-effect handlers
     "SET_CT_PROP": _set_ct_prop,
     "ASSIGN_AGENT": _assign_agent,

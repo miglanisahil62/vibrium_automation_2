@@ -78,6 +78,8 @@ REQUIRED_EDGES: dict[str, set[str]] = {
     # Phase 4c
     "SET_CT_PROP": {"success", "error"},
     "ASSIGN_AGENT": {"next"},
+    # WS3 same-day-retry gate (no-connect → retry today vs roll to next day).
+    "SAME_DAY_GATE": {"retry_today", "next_day"},
 }
 
 # Node types that count as terminal for cycle-detection / required-edge skips.

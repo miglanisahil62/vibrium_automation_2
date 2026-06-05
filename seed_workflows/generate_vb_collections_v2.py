@@ -218,7 +218,9 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
     ASSIGN_LIMIT    = n(0x0b)
     ASSIGN_RTP      = n(0x0c)
     ASSIGN_DEF      = n(0x0d)
-    ASSIGN_TIMEOUT  = n(0x0e)
+    # 0x0e (ASSIGN_TIMEOUT) RETIRED in WS3: the 60-min AWAIT timeout is now a
+    # re-evaluate (re-park / no-connect), not a 24h give-up, so no node routes to
+    # a "disposition_timeout_24h" assignment anymore. Index left unused.
     TERM_ASSIGNED   = n(0x0f)
     TERM_SUPPRESSED = n(0x10)
     # ASSIGN_LOOP_ERR is the sink for ENGINE faults in the call loop (a COUNTER
@@ -229,9 +231,16 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
     # full call budget" (master-auditor WS10 P1-1). Both still route to a human
     # agent — only the auto-recommend flag is reserved for true exhaustion.
     ASSIGN_LOOP_ERR = n(0x11)
+    # WS3 same-day-retry nodes.
+    SAME_DAY_GATE   = n(0x12)   # no-connect → retry today vs roll to next day
+    WAIT_SAMEDAY    = n(0x13)   # ≥1h same-day gap before the next attempt
 
     p = label_prefix
     use_counter = total_calls >= 2
+    # The DAY-rollover target (next call-day): COUNTER(day_index) for multi-day
+    # segments, else straight to ASSIGN_LIMIT (a 1-day segment that exhausts its
+    # same-day attempts has no next day). The SAME_DAY_GATE 'next_day' edge points
+    # here; a same-day retry instead loops via WAIT_SAMEDAY and never ticks it.
     retry_target = COUNTER_NODE if use_counter else ASSIGN_LIMIT
 
     nodes = [
@@ -246,8 +255,11 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "node_id": AWAIT,
             "type": "AWAIT_DISPOSITION",
             "label": f"{p}: Await Disposition",
-            "config": {"timeout_hours": 24},
-            "edges": {"disposition": BRANCH, "timeout": ASSIGN_TIMEOUT},
+            # WS3: 60-min window. The handler treats a timeout as a RE-EVALUATE
+            # (re-park if not-fired / disposition-in-flight <90m; only a genuine
+            # ≥90m-silent fired call routes to 'timeout' → the same-day gate).
+            "config": {"timeout_hours": 1},
+            "edges": {"disposition": BRANCH, "timeout": SAME_DAY_GATE},
         },
         {
             "node_id": BRANCH,
@@ -271,7 +283,7 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
                 "eod":            WAIT_EOD,
                 "callback":       WAIT_CB,
                 "escalate":       ASSIGN_ESC,
-                "retry":          retry_target,
+                "retry":          SAME_DAY_GATE,  # WS3: no-connect → same-day decision (not straight to next-day)
                 "rtp":            ASSIGN_RTP,
                 "default_assign": ASSIGN_DEF,
                 "default":        ASSIGN_DEF,
@@ -393,11 +405,33 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "edges": {"next": TERM_ASSIGNED, "error": TERM_ASSIGNED},
         },
         {
-            "node_id": ASSIGN_TIMEOUT,
-            "type": "ASSIGN_AGENT",
-            "label": f"{p}: Assign — Disposition Timeout",
-            "config": {"reason": "disposition_timeout_24h"},
-            "edges": {"next": TERM_ASSIGNED, "error": TERM_ASSIGNED},
+            "node_id": SAME_DAY_GATE,
+            "type": "SAME_DAY_GATE",
+            "label": f"{p}: Same-day Retry Gate",
+            # No-connect → retry today (≤3/day total, ≥1h gap, within 19:00) vs
+            # roll to the next call-day. retry_today bumps attempts_today and
+            # loops via WAIT_SAMEDAY → FIRE (no day_index tick); next_day routes
+            # to the day COUNTER (or ASSIGN_LIMIT for a 1-day segment).
+            "config": {
+                "attempts_today_key": "attempts_today",
+                "max_per_day": 3,
+                "min_gap_hours": 1,
+                "window_close_hour": 19,
+            },
+            "edges": {
+                "retry_today": WAIT_SAMEDAY,
+                "next_day":    retry_target,
+                "error":       ASSIGN_LOOP_ERR,
+            },
+        },
+        {
+            "node_id": WAIT_SAMEDAY,
+            "type": "WAIT_UNTIL",
+            "label": f"{p}: Wait — Same-day retry (+1h)",
+            # ≥1h gap before the same-day reattempt; the gate already verified
+            # there's room before 19:00. attempts_today was bumped at the gate.
+            "config": {"relative": "T+1 hour"},
+            "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": TERM_ASSIGNED,

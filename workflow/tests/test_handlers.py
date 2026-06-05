@@ -38,6 +38,7 @@ from workflow.agents.workflow_handlers import counter as counter_mod
 from workflow.agents.workflow_handlers import enroll as enroll_mod
 from workflow.agents.workflow_handlers import fetch_ct_props as fetch_mod
 from workflow.agents.workflow_handlers import fire_vb_call as fire_mod
+from workflow.agents.workflow_handlers import same_day_gate as sdg_mod
 from workflow.agents.workflow_handlers import switch as switch_mod
 from workflow.agents.workflow_handlers import terminate as terminate_mod
 from workflow.agents.workflow_handlers import wait_until as wait_mod
@@ -103,7 +104,7 @@ def _node(node_type: str, config: dict, edges: dict = None) -> NodeConfig:
 
 
 class TestRegistry:
-    def test_twelve_keys_exact(self):
+    def test_registry_keys_exact(self):
         assert set(REGISTRY.keys()) == {
             # Phase 4a
             "ENROLL",
@@ -120,6 +121,8 @@ class TestRegistry:
             # Phase 4c
             "SET_CT_PROP",
             "ASSIGN_AGENT",
+            # WS3 same-day-retry
+            "SAME_DAY_GATE",
         }
 
     def test_all_handlers_callable(self):
@@ -525,17 +528,20 @@ class TestAwaitDisposition:
         assert base_run.status == "WAITING"
         assert base_run.ready_at_ist == result.ready_at_ist
 
-    def test_timeout_after_deadline_routes_to_timeout(self, base_run: Run):
-        # Set entered 48h ago with timeout 1h → way past deadline.
-        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(hours=48)
+    def test_timeout_no_txn_reparks_not_no_connect(self, base_run: Run):
+        # WS3: past deadline but txn=None (can't confirm a fire) AND within the
+        # MAX_AWAIT bound → CONSERVATIVE re-park, NEVER a false no-connect. The
+        # genuine no-connect path (fired >=90m) + the starved-escalate path are
+        # covered in TestAwaitRequeue with a real txn.
+        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(minutes=90)
         base_run.entered_node_at_ist = anchor.strftime("%Y-%m-%d %H:%M:%S")
         base_run.scratchpad = {}
         result = await_mod.execute(
             _node("AWAIT_DISPOSITION", {"timeout_hours": 1}),
             base_run, ctx=None, txn=None,
         )
-        assert result.next_edge == "timeout"
-        assert base_run.status == "ACTIVE"
+        assert result.next_edge is None       # re-parked (within MAX_AWAIT)
+        assert base_run.status == "WAITING"
 
     def test_disposition_wins_even_past_deadline(self, base_run: Run):
         anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(hours=48)
@@ -549,17 +555,17 @@ class TestAwaitDisposition:
         assert result.next_edge == "disposition"
 
     def test_bad_timeout_hours_falls_back_to_default(self, base_run: Run):
-        # entered_node_at_ist is way in the past → with default 24h still
-        # past deadline, but we want to assert it doesn't crash.
-        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(hours=48)
+        # Bad timeout_hours → 24h fallback (no crash). Entered 90m ago → with the
+        # 24h fallback the deadline is still in the future → normal park.
+        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(minutes=90)
         base_run.entered_node_at_ist = anchor.strftime("%Y-%m-%d %H:%M:%S")
         base_run.scratchpad = {}
         result = await_mod.execute(
             _node("AWAIT_DISPOSITION", {"timeout_hours": "garbage"}),
             base_run, ctx=None, txn=None,
         )
-        # With default 24h and anchor 48h ago, deadline elapsed → timeout.
-        assert result.next_edge == "timeout"
+        assert result.next_edge is None       # parked at the 24h-fallback deadline
+        assert base_run.status == "WAITING"
 
 
 # --------------------------------------------------------------------------
@@ -1159,3 +1165,173 @@ class TestCounter:
         r4 = counter_mod.execute(node, base_run, ctx=None, txn=None)
         assert r4.next_edge == "at_limit"
         assert r4.scratchpad_patch == {"attempts": 4}
+
+
+# --------------------------------------------------------------------------
+# SAME_DAY_GATE (WS3 same-day retry)
+# --------------------------------------------------------------------------
+
+
+class TestSameDayGate:
+    def _node(self, **cfg):
+        base = {"attempts_today_key": "attempts_today", "max_per_day": 3,
+                "min_gap_hours": 1, "window_close_hour": 19}
+        base.update(cfg)
+        return _node("SAME_DAY_GATE", base)
+
+    def _at(self, monkeypatch, hour):
+        from datetime import datetime as _dt
+        monkeypatch.setattr(sdg_mod, "_now_ist",
+                            lambda: _dt(2026, 6, 5, hour, 0, 0))
+
+    def test_retry_today_when_budget_and_room(self, monkeypatch, base_run: Run):
+        self._at(monkeypatch, 12)               # midday → room before 19:00
+        base_run.scratchpad = {"attempts_today": 0}
+        r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
+        assert r.next_edge == "retry_today"
+        assert r.scratchpad_patch == {"attempts_today": 1}
+
+    def test_next_day_when_budget_spent(self, monkeypatch, base_run: Run):
+        # max_per_day=3 → max retries=2; attempts_today=2 → no budget.
+        self._at(monkeypatch, 12)
+        base_run.scratchpad = {"attempts_today": 2}
+        r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
+        assert r.next_edge == "next_day"
+        assert r.scratchpad_patch == {}
+
+    def test_next_day_when_window_closing(self, monkeypatch, base_run: Run):
+        # 18:30 + 1h = 19:30 → past 19:00 → no room today → next_day.
+        self._at(monkeypatch, 18)
+        # set minute via a custom now
+        from datetime import datetime as _dt
+        monkeypatch.setattr(sdg_mod, "_now_ist", lambda: _dt(2026, 6, 5, 18, 30, 0))
+        base_run.scratchpad = {"attempts_today": 0}
+        r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
+        assert r.next_edge == "next_day"
+
+    def test_retry_caps_at_three_total(self, monkeypatch, base_run: Run):
+        # Walk the budget: 0→retry(1), 1→retry(2), 2→next_day. So 2 retries =
+        # 3 total calls/day (1 initial + 2), matching ≤3/day.
+        self._at(monkeypatch, 10)
+        edges = []
+        sp = {"attempts_today": 0}
+        for _ in range(3):
+            r = sdg_mod.execute(self._node(), Run(
+                id=1, workflow_id=1, version_id=1, customer_id="c",
+                current_node_id="n", scratchpad=dict(sp), status="ACTIVE",
+                entered_node_at_ist="2026-06-05 10:00:00"), ctx=None, txn=None)
+            edges.append(r.next_edge)
+            sp.update(r.scratchpad_patch)
+        assert edges == ["retry_today", "retry_today", "next_day"]
+
+    def test_bad_config_routes_error(self, base_run: Run):
+        r = sdg_mod.execute(_node("SAME_DAY_GATE", {"max_per_day": "x"}),
+                            base_run, ctx=None, txn=None)
+        assert r.next_edge == "error"
+
+
+# --------------------------------------------------------------------------
+# AWAIT_DISPOSITION 60-min requeue (WS3 P0-3)
+# --------------------------------------------------------------------------
+
+
+def _seed_fired(conn, run_id, fired_at_ist, customer_id="c1"):
+    _seed_action(conn, run_id, status="FIRED", fired_at_ist=fired_at_ist,
+                 customer_id=customer_id)
+
+
+def _seed_action(conn, run_id, *, status, fired_at_ist=None, customer_id="c1",
+                 attempt_count=0):
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO wf_pending_actions (run_id, node_id, attempt_count, "
+            "customer_id, scheduled_at_ist, status, created_at_ist, fired_at_ist) "
+            "VALUES (?, 'fire', ?, ?, ?, ?, ?, ?)",
+            (run_id, attempt_count, customer_id, fired_at_ist or _now_str_h(),
+             status, fired_at_ist or _now_str_h(), fired_at_ist),
+        )
+
+
+def _now_str_h():
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+    return _dt.now(_Z("Asia/Kolkata")).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class TestAwaitRequeue:
+    def _past(self, minutes):
+        from datetime import datetime as _dt, timedelta as _td
+        from zoneinfo import ZoneInfo as _Z
+        return (_dt.now(_Z("Asia/Kolkata")).replace(tzinfo=None)
+                - _td(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _run(self, entered_minutes_ago):
+        return Run(id=555, workflow_id=1, version_id=1, customer_id="c1",
+                   current_node_id="await", scratchpad={}, status="WAITING",
+                   entered_node_at_ist=self._past(entered_minutes_ago))
+
+    def test_timeout_not_fired_reparks(self, workflow_db):
+        # Entered 120m ago (timeout elapsed), but NO FIRED row → still queued →
+        # re-park (no edge), NOT a no-connect.
+        run = self._run(120)
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge is None            # parked
+        assert run.status == "WAITING"
+
+    def test_timeout_fired_recently_reparks(self, workflow_db):
+        # Fired 30m ago (< 90m SLA) but timeout elapsed → disposition in-flight
+        # → re-park, do NOT route no-connect.
+        run = self._run(120)
+        _seed_fired(workflow_db, 555, self._past(30))
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge is None
+        assert run.status == "WAITING"
+
+    def test_timeout_fired_past_sla_routes_no_connect(self, workflow_db):
+        # Fired 100m ago (>= 90m SLA), still silent → genuine no-connect → timeout edge.
+        run = self._run(120)
+        _seed_fired(workflow_db, 555, self._past(100))
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge == "timeout"
+        assert run.status == "ACTIVE"
+
+    def test_disposition_still_wins_over_requeue(self, workflow_db):
+        # A returned disposition routes 'disposition' regardless of timers.
+        run = self._run(120)
+        run.scratchpad = {"last_disposition_action_class": "RETRY"}
+        _seed_fired(workflow_db, 555, self._past(100))
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge == "disposition"
+
+    def test_timeout_suppressed_escalates(self, workflow_db):
+        # The queued fire was SUPPRESSED (cooldown/cap/window) → will never
+        # happen → escalate via 'timeout', NOT park forever (P0-1 half2 / P1-1).
+        run = self._run(120)
+        _seed_action(workflow_db, 555, status="SUPPRESSED")
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge == "timeout"
+        assert run.status == "ACTIVE"
+
+    def test_timeout_starved_escalates(self, workflow_db, monkeypatch):
+        # Never fired (no row / stuck PENDING) but waited past MAX_AWAIT → escalate
+        # so the run can't park at AWAIT forever (P0-1 second half).
+        monkeypatch.setenv("WF_MAX_AWAIT_HOURS", "2")
+        run = self._run(180)   # entered 3h ago > 2h MAX
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge == "timeout"
+        assert run.status == "ACTIVE"
+
+    def test_pending_within_bound_reparks(self, workflow_db):
+        # Queued PENDING (not yet fired), within MAX_AWAIT → re-park, not escalate.
+        run = self._run(120)
+        _seed_action(workflow_db, 555, status="PENDING")
+        node = _node("AWAIT_DISPOSITION", {"timeout_hours": 1})
+        r = await_mod.execute(node, run, ctx=None, txn=workflow_db)
+        assert r.next_edge is None
+        assert run.status == "WAITING"

@@ -34,6 +34,7 @@ written by ingest in the same wakeup.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -45,6 +46,60 @@ log = logging.getLogger("workflow.handlers.await_disposition")
 _IST = ZoneInfo("Asia/Kolkata")
 _IST_TS_FMT = "%Y-%m-%d %H:%M:%S"
 _DEFAULT_TIMEOUT_HOURS = 24
+
+
+def _max_await_hours() -> float:
+    """Hard upper bound on how long a run may sit at AWAIT being re-parked. A
+    call that NEVER fires (queue starvation, stuck PENDING) must not park
+    forever (master-auditor WS3-2b P0-1 second half) — past this bound the run
+    escalates via the 'timeout' edge so an operator/agent picks it up. Defaults
+    to ~one full call window; env-tunable."""
+    try:
+        return max(2.0, float(os.environ.get("WF_MAX_AWAIT_HOURS", "12")))
+    except (TypeError, ValueError):  # stashfin-lint: ignore  # documented contract: malformed env → safe 12h default (bounded, not unbounded)
+        return 12.0
+
+
+def _vendor_sla_minutes() -> int:
+    """WS3 P0-3: how long after a call FIRES the bot's disposition reliably
+    lands. Owner-confirmed: the disposition webhook is immediate once the call
+    fires; the only lag is the 750/hr queue BEFORE firing. So 90 min after
+    ``fired_at_ist`` is a conservative upper bound for "disposition should have
+    arrived by now". Env-tunable; clamped to a sane floor."""
+    try:
+        v = int(os.environ.get("WF_VENDOR_DISPOSITION_SLA_MIN", "90"))
+        return v if v >= 5 else 90
+    except (TypeError, ValueError):  # stashfin-lint: ignore  # documented contract: a malformed env var falls back to the safe 90-min default (the conservative direction — re-park rather than a false no-connect).
+        return 90
+
+
+def _current_action(txn: Any, run_id: int) -> "tuple[Optional[str], Optional[datetime]]":
+    """Return (status, fired_at) of the MOST-RECENT wf_pending_actions row for
+    this run — i.e. the call THIS AWAIT is waiting on (the latest FIRE that led
+    here; max id). Returns:
+      * ('FIRED'/'FIRED_RECOVERED', <fired_at datetime>) — the call went out.
+      * ('SUPPRESSED'/'ERROR', None)                     — the scheduler refused
+        the fire (cooldown / daily-cap / paid / window / CT error). The call will
+        NEVER happen for this queued row → the run must escalate, not park.
+      * ('PENDING'/'FIRING_IN_PROGRESS', None)           — still queued under the
+        750/hr cap, not fired yet → re-park.
+      * (None, None) — no row / txn None / query failed → treat as queued
+        (conservative re-park, never a false no-connect)."""
+    if txn is None:
+        return (None, None)
+    try:
+        row = txn.execute(
+            "SELECT status, fired_at_ist FROM wf_pending_actions "
+            "WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+            (int(run_id),),
+        ).fetchone()
+    except Exception as exc:  # noqa: BLE001 — query failure → conservative re-park
+        log.warning("await_disposition action-lookup failed run=%s (%s) — re-park", run_id, exc)
+        return (None, None)
+    if not row:
+        return (None, None)
+    fired = _parse_ist_ts(row[1]) if row[1] else None
+    return (row[0], fired)
 
 
 def _now_ist() -> datetime:
@@ -120,18 +175,69 @@ def execute(
     deadline_str = deadline.strftime(_IST_TS_FMT)
     now = _now_ist()
 
-    # 2. Timeout elapsed?
+    # 2. Timeout elapsed? With the short (60-min) AWAIT, a timeout is a
+    # RE-EVALUATE, not a give-up (WS3 P0-3). The bot disposition webhook is
+    # immediate ONCE the call fires; the lag is the 750/hr queue BEFORE firing.
+    # Classify via the MOST-RECENT wf_pending_actions row for this run:
+    #   FIRED, ≥SLA(90m) silent   → genuine no-connect → 'timeout' edge
+    #   SUPPRESSED / ERROR        → the queued fire was REFUSED (cooldown / cap /
+    #                               paid / window / CT error) and will never
+    #                               happen → escalate via 'timeout' (P1-1), never
+    #                               park forever waiting on a call that won't come
+    #   total wait ≥ MAX_AWAIT    → never-fired/stuck (queue starvation) → escalate
+    #                               via 'timeout' so an operator/agent picks it up
+    #                               (P0-1 second half — bounded re-park)
+    #   FIRED <SLA, or PENDING    → disposition in-flight / still queued → re-park
+    # On a re-park the run MUST stay current_node_type='AWAIT_DISPOSITION' so a
+    # late disposition still wakes it via _wake_run.
     if now >= deadline:
-        run.status = "ACTIVE"
-        run.ready_at_ist = None
+        status, fired_at = _current_action(txn, run.id)
+        sla_min = _vendor_sla_minutes()
+        total_waited = now - anchor
+        max_await = timedelta(hours=_max_await_hours())
+
+        genuine_no_connect = (
+            status in ("FIRED", "FIRED_RECOVERED")
+            and fired_at is not None
+            and (now - fired_at) >= timedelta(minutes=sla_min)
+        )
+        refused = status in ("SUPPRESSED", "ERROR")
+        starved = total_waited >= max_await
+
+        if genuine_no_connect or refused or starved:
+            run.status = "ACTIVE"
+            run.ready_at_ist = None
+            if genuine_no_connect:
+                why = (f"genuine no-connect (fired {fired_at.strftime(_IST_TS_FMT)} "
+                       f"+ {sla_min}m SLA elapsed, silent)")
+            elif refused:
+                why = f"queued fire was {status} (refused — will not happen); escalate"
+            else:
+                why = (f"bounded re-park exhausted (waited {total_waited} >= "
+                       f"{max_await}, status={status}); escalate")
+            return NodeResult(
+                next_edge="timeout",
+                scratchpad_patch={},
+                side_effect=f"AWAIT_DISPOSITION → timeout: {why}",
+                ready_at_ist=None,
+            )
+
+        # Still in-flight (FIRED <SLA) or still queued (PENDING/None) and within
+        # the MAX_AWAIT bound → re-park for another timeout window.
+        requeue_deadline = (now + timedelta(hours=timeout_hours)).strftime(_IST_TS_FMT)
+        run.status = "WAITING"
+        run.ready_at_ist = requeue_deadline
+        if status in ("FIRED", "FIRED_RECOVERED") and fired_at is not None:
+            reason = f"fired {int((now - fired_at).total_seconds() // 60)}m ago < {sla_min}m SLA"
+        else:
+            reason = f"not fired yet (status={status or 'queued'})"
         return NodeResult(
-            next_edge="timeout",
+            next_edge=None,
             scratchpad_patch={},
             side_effect=(
-                f"AWAIT_DISPOSITION timeout after {timeout_hours}h "
-                f"(anchor={anchor.strftime(_IST_TS_FMT)} deadline={deadline_str})"
+                f"AWAIT_DISPOSITION re-park ({reason}) until {requeue_deadline}"
             ),
-            ready_at_ist=None,
+            ready_at_ist=requeue_deadline,
         )
 
     # 3. Park. Executor reads status=WAITING and ready_at_ist and skips

@@ -536,11 +536,12 @@ def test_daily_cap_three_fires_suppresses(dbs):
 # --------------------------------------------------------------- 10. cooldown
 
 
-def test_cooldown_one_hour_ago_suppresses(dbs):
-    """Pre-seed an audit row 60 min ago → cooldown gate blocks (3h rule)."""
+def test_cooldown_recent_fire_suppresses(dbs):
+    """Pre-seed an audit row 30 min ago → cooldown gate blocks (WS3 1h rule:
+    <1h since last fire → suppressed; matches the SAME_DAY_GATE ≥1h gap)."""
     wf, vb = dbs
     [row_id] = _insert_pending(wf, n=1, customer_id_start=8000002)
-    _seed_audit(vb, 8000002, fired_at_ist=_past_str(60), source="workflow")
+    _seed_audit(vb, 8000002, fired_at_ist=_past_str(30), source="workflow")
 
     trigger = _ok_trigger()
     audit = MagicMock()

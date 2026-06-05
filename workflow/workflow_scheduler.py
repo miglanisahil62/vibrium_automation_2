@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -87,11 +88,22 @@ DEFAULT_BATCH_LIMIT = 100
 # the cap — a cross-system hourly cap is a documented follow-up.
 DEFAULT_HOURLY_CALL_CAP = 750
 
-# Cooldown between fires for a single customer (any source). Mirrors the adhoc
-# COOLDOWN_HOURS=3 — keeping them equal makes the Phase 7 time-bound
-# triangulation unambiguous (at most one fire per customer per 3h across
-# both systems).
-COOLDOWN_HOURS = 3
+# Cooldown between fires for a single customer (workflow rows only — this
+# scheduler only drains wf_pending_actions). WS3 lowers this to 1h to match the
+# SAME_DAY_GATE's ≥1h same-day gap: a same-day retry parks WAIT_SAMEDAY "T+1 hour"
+# from the gate (always strictly >1h after the prior fire), so a 1h cooldown lets
+# the retry through while still capping at ≤3/day (the customer_call_audit daily
+# cap is the hard backstop). With the OLD 3h value the gate's 1h retry was
+# SUPPRESSED and the run parked at AWAIT forever (master-auditor WS3-2b P0-1).
+# Env-tunable; floor 1. NOTE: shorter cooldown ⇒ multiple fires/customer/day, so
+# disposition attribution can no longer assume one-fire-per-3h — the ingest wakes
+# by the AWAIT-parked run (run identity) + most-recent FIRED, which is correct
+# for the wake; exact per-attempt decision-log attribution is the multi-attempt
+# follow-up (P2).
+try:
+    COOLDOWN_HOURS = max(1, int(os.environ.get("WF_COOLDOWN_HOURS", "1")))
+except (TypeError, ValueError):
+    COOLDOWN_HOURS = 1
 
 # Daily cap (matches MAX_CALLS_PER_DAY in pre_call_gate). Stored here as a
 # module constant so the test suite can monkeypatch it down to 1 without

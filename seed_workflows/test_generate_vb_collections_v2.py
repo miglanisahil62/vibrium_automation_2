@@ -45,14 +45,21 @@ def test_counter_limit_equals_total_calls(total_calls):
     assert counter["edges"]["at_limit"] == pfx.format(0x0b)      # ASSIGN_LIMIT
 
 
-def test_single_call_has_no_counter_and_retry_assigns():
+def test_single_call_no_daycounter_retry_via_same_day_gate():
     pfx = gen._seg_prefix(0)
     by_id = _loop_by_id(pfx, 1)
-    assert pfx.format(0x09) not in by_id   # no COUNTER node
-    assert pfx.format(0x0a) not in by_id   # no WAIT_RETRY node
+    assert pfx.format(0x09) not in by_id   # no day COUNTER node (1 call-day)
+    assert pfx.format(0x0a) not in by_id   # no next-day WAIT_RETRY node
     branch = by_id[pfx.format(0x03)]
-    # First RETRY routes straight to ASSIGN_LIMIT (one call, then assign).
-    assert branch["edges"]["retry"] == pfx.format(0x0b)
+    # WS3: a no-connect now routes to the SAME_DAY_GATE (0x12), which may retry
+    # today (≤3) or, on next_day, assign — since a 1-day segment has no COUNTER,
+    # its next_day target is ASSIGN_LIMIT (0x0b).
+    assert branch["edges"]["retry"] == pfx.format(0x12)        # SAME_DAY_GATE
+    gate = by_id[pfx.format(0x12)]
+    assert gate["type"] == "SAME_DAY_GATE"
+    assert gate["edges"]["retry_today"] == pfx.format(0x13)    # WAIT_SAMEDAY
+    assert gate["edges"]["next_day"] == pfx.format(0x0b)       # ASSIGN_LIMIT (1-day)
+    assert by_id[pfx.format(0x13)]["edges"]["next"] == pfx.format(0x01)  # → FIRE
 
 
 # ----------------------------------------------------------- classification chain

@@ -121,11 +121,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "high_wa: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a0000000-0000-4000-a000-000000000003",
-        "timeout": "a0000000-0000-4000-a000-00000000000e"
+        "timeout": "a0000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -150,7 +150,7 @@
         "eod": "a0000000-0000-4000-a000-000000000006",
         "callback": "a0000000-0000-4000-a000-000000000007",
         "escalate": "a0000000-0000-4000-a000-000000000008",
-        "retry": "a0000000-0000-4000-a000-000000000009",
+        "retry": "a0000000-0000-4000-a000-000000000012",
         "rtp": "a0000000-0000-4000-a000-00000000000c",
         "default_assign": "a0000000-0000-4000-a000-00000000000d",
         "default": "a0000000-0000-4000-a000-00000000000d",
@@ -294,15 +294,31 @@
       }
     },
     {
-      "node_id": "a0000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "high_wa: Assign \u2014 Disposition Timeout",
+      "node_id": "a0000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "high_wa: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a0000000-0000-4000-a000-00000000000f",
-        "error": "a0000000-0000-4000-a000-00000000000f"
+        "retry_today": "a0000000-0000-4000-a000-000000000013",
+        "next_day": "a0000000-0000-4000-a000-000000000009",
+        "error": "a0000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a0000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "high_wa: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a0000000-0000-4000-a000-000000000001",
+        "error": "a0000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -365,11 +381,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "mid_wa: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a1000000-0000-4000-a000-000000000003",
-        "timeout": "a1000000-0000-4000-a000-00000000000e"
+        "timeout": "a1000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -394,7 +410,7 @@
         "eod": "a1000000-0000-4000-a000-000000000006",
         "callback": "a1000000-0000-4000-a000-000000000007",
         "escalate": "a1000000-0000-4000-a000-000000000008",
-        "retry": "a1000000-0000-4000-a000-000000000009",
+        "retry": "a1000000-0000-4000-a000-000000000012",
         "rtp": "a1000000-0000-4000-a000-00000000000c",
         "default_assign": "a1000000-0000-4000-a000-00000000000d",
         "default": "a1000000-0000-4000-a000-00000000000d",
@@ -538,15 +554,31 @@
       }
     },
     {
-      "node_id": "a1000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "mid_wa: Assign \u2014 Disposition Timeout",
+      "node_id": "a1000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "mid_wa: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a1000000-0000-4000-a000-00000000000f",
-        "error": "a1000000-0000-4000-a000-00000000000f"
+        "retry_today": "a1000000-0000-4000-a000-000000000013",
+        "next_day": "a1000000-0000-4000-a000-000000000009",
+        "error": "a1000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a1000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "mid_wa: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a1000000-0000-4000-a000-000000000001",
+        "error": "a1000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -609,11 +641,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "mid_nowa_1: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a2000000-0000-4000-a000-000000000003",
-        "timeout": "a2000000-0000-4000-a000-00000000000e"
+        "timeout": "a2000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -638,7 +670,7 @@
         "eod": "a2000000-0000-4000-a000-000000000006",
         "callback": "a2000000-0000-4000-a000-000000000007",
         "escalate": "a2000000-0000-4000-a000-000000000008",
-        "retry": "a2000000-0000-4000-a000-000000000009",
+        "retry": "a2000000-0000-4000-a000-000000000012",
         "rtp": "a2000000-0000-4000-a000-00000000000c",
         "default_assign": "a2000000-0000-4000-a000-00000000000d",
         "default": "a2000000-0000-4000-a000-00000000000d",
@@ -782,15 +814,31 @@
       }
     },
     {
-      "node_id": "a2000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "mid_nowa_1: Assign \u2014 Disposition Timeout",
+      "node_id": "a2000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "mid_nowa_1: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a2000000-0000-4000-a000-00000000000f",
-        "error": "a2000000-0000-4000-a000-00000000000f"
+        "retry_today": "a2000000-0000-4000-a000-000000000013",
+        "next_day": "a2000000-0000-4000-a000-000000000009",
+        "error": "a2000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a2000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "mid_nowa_1: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a2000000-0000-4000-a000-000000000001",
+        "error": "a2000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -853,11 +901,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "mid_nowa_2: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a3000000-0000-4000-a000-000000000003",
-        "timeout": "a3000000-0000-4000-a000-00000000000e"
+        "timeout": "a3000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -882,7 +930,7 @@
         "eod": "a3000000-0000-4000-a000-000000000006",
         "callback": "a3000000-0000-4000-a000-000000000007",
         "escalate": "a3000000-0000-4000-a000-000000000008",
-        "retry": "a3000000-0000-4000-a000-000000000009",
+        "retry": "a3000000-0000-4000-a000-000000000012",
         "rtp": "a3000000-0000-4000-a000-00000000000c",
         "default_assign": "a3000000-0000-4000-a000-00000000000d",
         "default": "a3000000-0000-4000-a000-00000000000d",
@@ -1026,15 +1074,31 @@
       }
     },
     {
-      "node_id": "a3000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "mid_nowa_2: Assign \u2014 Disposition Timeout",
+      "node_id": "a3000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "mid_nowa_2: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a3000000-0000-4000-a000-00000000000f",
-        "error": "a3000000-0000-4000-a000-00000000000f"
+        "retry_today": "a3000000-0000-4000-a000-000000000013",
+        "next_day": "a3000000-0000-4000-a000-000000000009",
+        "error": "a3000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a3000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "mid_nowa_2: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a3000000-0000-4000-a000-000000000001",
+        "error": "a3000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -1097,11 +1161,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "mid_nowa_3: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a4000000-0000-4000-a000-000000000003",
-        "timeout": "a4000000-0000-4000-a000-00000000000e"
+        "timeout": "a4000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -1126,7 +1190,7 @@
         "eod": "a4000000-0000-4000-a000-000000000006",
         "callback": "a4000000-0000-4000-a000-000000000007",
         "escalate": "a4000000-0000-4000-a000-000000000008",
-        "retry": "a4000000-0000-4000-a000-00000000000b",
+        "retry": "a4000000-0000-4000-a000-000000000012",
         "rtp": "a4000000-0000-4000-a000-00000000000c",
         "default_assign": "a4000000-0000-4000-a000-00000000000d",
         "default": "a4000000-0000-4000-a000-00000000000d",
@@ -1239,15 +1303,31 @@
       }
     },
     {
-      "node_id": "a4000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "mid_nowa_3: Assign \u2014 Disposition Timeout",
+      "node_id": "a4000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "mid_nowa_3: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a4000000-0000-4000-a000-00000000000f",
-        "error": "a4000000-0000-4000-a000-00000000000f"
+        "retry_today": "a4000000-0000-4000-a000-000000000013",
+        "next_day": "a4000000-0000-4000-a000-00000000000b",
+        "error": "a4000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a4000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "mid_nowa_3: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a4000000-0000-4000-a000-000000000001",
+        "error": "a4000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -1310,11 +1390,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "low_wa: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a5000000-0000-4000-a000-000000000003",
-        "timeout": "a5000000-0000-4000-a000-00000000000e"
+        "timeout": "a5000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -1339,7 +1419,7 @@
         "eod": "a5000000-0000-4000-a000-000000000006",
         "callback": "a5000000-0000-4000-a000-000000000007",
         "escalate": "a5000000-0000-4000-a000-000000000008",
-        "retry": "a5000000-0000-4000-a000-000000000009",
+        "retry": "a5000000-0000-4000-a000-000000000012",
         "rtp": "a5000000-0000-4000-a000-00000000000c",
         "default_assign": "a5000000-0000-4000-a000-00000000000d",
         "default": "a5000000-0000-4000-a000-00000000000d",
@@ -1483,15 +1563,31 @@
       }
     },
     {
-      "node_id": "a5000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "low_wa: Assign \u2014 Disposition Timeout",
+      "node_id": "a5000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "low_wa: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a5000000-0000-4000-a000-00000000000f",
-        "error": "a5000000-0000-4000-a000-00000000000f"
+        "retry_today": "a5000000-0000-4000-a000-000000000013",
+        "next_day": "a5000000-0000-4000-a000-000000000009",
+        "error": "a5000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a5000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "low_wa: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a5000000-0000-4000-a000-000000000001",
+        "error": "a5000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -1554,11 +1650,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "low_nowa_1: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a6000000-0000-4000-a000-000000000003",
-        "timeout": "a6000000-0000-4000-a000-00000000000e"
+        "timeout": "a6000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -1583,7 +1679,7 @@
         "eod": "a6000000-0000-4000-a000-000000000006",
         "callback": "a6000000-0000-4000-a000-000000000007",
         "escalate": "a6000000-0000-4000-a000-000000000008",
-        "retry": "a6000000-0000-4000-a000-000000000009",
+        "retry": "a6000000-0000-4000-a000-000000000012",
         "rtp": "a6000000-0000-4000-a000-00000000000c",
         "default_assign": "a6000000-0000-4000-a000-00000000000d",
         "default": "a6000000-0000-4000-a000-00000000000d",
@@ -1727,15 +1823,31 @@
       }
     },
     {
-      "node_id": "a6000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "low_nowa_1: Assign \u2014 Disposition Timeout",
+      "node_id": "a6000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "low_nowa_1: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a6000000-0000-4000-a000-00000000000f",
-        "error": "a6000000-0000-4000-a000-00000000000f"
+        "retry_today": "a6000000-0000-4000-a000-000000000013",
+        "next_day": "a6000000-0000-4000-a000-000000000009",
+        "error": "a6000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a6000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_1: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a6000000-0000-4000-a000-000000000001",
+        "error": "a6000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -1798,11 +1910,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "low_nowa_2: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a7000000-0000-4000-a000-000000000003",
-        "timeout": "a7000000-0000-4000-a000-00000000000e"
+        "timeout": "a7000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -1827,7 +1939,7 @@
         "eod": "a7000000-0000-4000-a000-000000000006",
         "callback": "a7000000-0000-4000-a000-000000000007",
         "escalate": "a7000000-0000-4000-a000-000000000008",
-        "retry": "a7000000-0000-4000-a000-000000000009",
+        "retry": "a7000000-0000-4000-a000-000000000012",
         "rtp": "a7000000-0000-4000-a000-00000000000c",
         "default_assign": "a7000000-0000-4000-a000-00000000000d",
         "default": "a7000000-0000-4000-a000-00000000000d",
@@ -1971,15 +2083,31 @@
       }
     },
     {
-      "node_id": "a7000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "low_nowa_2: Assign \u2014 Disposition Timeout",
+      "node_id": "a7000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "low_nowa_2: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a7000000-0000-4000-a000-00000000000f",
-        "error": "a7000000-0000-4000-a000-00000000000f"
+        "retry_today": "a7000000-0000-4000-a000-000000000013",
+        "next_day": "a7000000-0000-4000-a000-000000000009",
+        "error": "a7000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a7000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "low_nowa_2: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a7000000-0000-4000-a000-000000000001",
+        "error": "a7000000-0000-4000-a000-000000000011"
       }
     },
     {
@@ -2042,11 +2170,11 @@
       "type": "AWAIT_DISPOSITION",
       "label": "high_nowa: Await Disposition",
       "config": {
-        "timeout_hours": 24
+        "timeout_hours": 1
       },
       "edges": {
         "disposition": "a8000000-0000-4000-a000-000000000003",
-        "timeout": "a8000000-0000-4000-a000-00000000000e"
+        "timeout": "a8000000-0000-4000-a000-000000000012"
       }
     },
     {
@@ -2071,7 +2199,7 @@
         "eod": "a8000000-0000-4000-a000-000000000006",
         "callback": "a8000000-0000-4000-a000-000000000007",
         "escalate": "a8000000-0000-4000-a000-000000000008",
-        "retry": "a8000000-0000-4000-a000-000000000009",
+        "retry": "a8000000-0000-4000-a000-000000000012",
         "rtp": "a8000000-0000-4000-a000-00000000000c",
         "default_assign": "a8000000-0000-4000-a000-00000000000d",
         "default": "a8000000-0000-4000-a000-00000000000d",
@@ -2215,15 +2343,31 @@
       }
     },
     {
-      "node_id": "a8000000-0000-4000-a000-00000000000e",
-      "type": "ASSIGN_AGENT",
-      "label": "high_nowa: Assign \u2014 Disposition Timeout",
+      "node_id": "a8000000-0000-4000-a000-000000000012",
+      "type": "SAME_DAY_GATE",
+      "label": "high_nowa: Same-day Retry Gate",
       "config": {
-        "reason": "disposition_timeout_24h"
+        "attempts_today_key": "attempts_today",
+        "max_per_day": 3,
+        "min_gap_hours": 1,
+        "window_close_hour": 19
       },
       "edges": {
-        "next": "a8000000-0000-4000-a000-00000000000f",
-        "error": "a8000000-0000-4000-a000-00000000000f"
+        "retry_today": "a8000000-0000-4000-a000-000000000013",
+        "next_day": "a8000000-0000-4000-a000-000000000009",
+        "error": "a8000000-0000-4000-a000-000000000011"
+      }
+    },
+    {
+      "node_id": "a8000000-0000-4000-a000-000000000013",
+      "type": "WAIT_UNTIL",
+      "label": "high_nowa: Wait \u2014 Same-day retry (+1h)",
+      "config": {
+        "relative": "T+1 hour"
+      },
+      "edges": {
+        "next": "a8000000-0000-4000-a000-000000000001",
+        "error": "a8000000-0000-4000-a000-000000000011"
       }
     },
     {
