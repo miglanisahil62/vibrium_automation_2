@@ -74,10 +74,11 @@ IST = ZoneInfo("Asia/Kolkata")
 # absent from the view. The CT `dpd` profile property is sparse/unreliable, so the
 # graph does NOT re-gate on it; see ENROLL_CONDITION_EXPR in generate_vb_collections_v2.)
 _CANDIDATE_SQL = """
-    SELECT DISTINCT customer_id
+    SELECT customer_id, MIN(ageing) AS ageing
     FROM sttash_website_live.collection_view
     WHERE ageing BETWEEN %(lo)s AND %(hi)s
       AND customer_id IS NOT NULL
+    GROUP BY customer_id
 """
 
 _AGEING_LO = 1
@@ -136,13 +137,22 @@ def _normalize_ids(raw_ids: "list", limit: "int | None") -> list[str]:
     return deduped
 
 
-def _fetch_candidates(limit: "int | None") -> list[str]:
-    """Query collection_view for ageing=1 customer_ids. Returns list[str].
+def _fetch_candidates(limit: "int | None", cohort_date: str) -> "list[tuple[str, str]]":
+    """Query collection_view for ageing 1-30 customers. Returns a list of
+    ``(customer_id, spell_start)`` pairs (deduped, order-preserved).
 
-    Uses the in-repo Redshift helper (the same one workflow_ingest uses) so
-    credential handling and connection setup stay in one place. Lazy-imported
-    so the module is importable in test envs without the symlink/creds.
+    ``spell_start`` (WS8 spell-dedup) = ``cohort_date - (ageing - 1) days`` — the
+    date the customer's CURRENT continuous overdue spell began. It is stable for
+    a customer across the whole spell (ageing +1/day, date +1/day → spell_start
+    constant), so keying enrollment on ``{customer_id}_{spell_start}`` enrolls
+    them ONCE per spell. A cure (drops out of collection_view) + relapse restarts
+    ageing → a new spell_start → eligible to re-enter.
+
+    Uses the in-repo Redshift helper. Lazy-imported so the module is importable
+    in test envs without the symlink/creds.
     """
+    from datetime import date, timedelta
+
     from external.vibrium_automation_scripts.db import redshift, query  # type: ignore
 
     with redshift() as cn:
@@ -150,27 +160,48 @@ def _fetch_candidates(limit: "int | None") -> list[str]:
             cn,
             _CANDIDATE_SQL,
             params={"lo": _AGEING_LO, "hi": _AGEING_HI},
-            rationale="vibrium-workflow daily DPD-1 enrollment candidate fetch",
+            rationale="vibrium-workflow daily X-bucket (ageing 1-30) enrollment candidate fetch",
         )
 
-    return _normalize_ids(df["customer_id"].tolist(), limit)
+    base = date.fromisoformat(cohort_date)
+    seen: set[str] = set()
+    out: "list[tuple[str, str]]" = []
+    for raw, ag in zip(df["customer_id"].tolist(), df["ageing"].tolist()):
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s.endswith(".0"):           # float-stored-id trap
+            s = s[:-2]
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        try:
+            a = max(1, int(ag))
+        except (TypeError, ValueError):
+            a = 1                       # missing ageing → treat as fresh spell
+        spell_start = (base - timedelta(days=a - 1)).isoformat()
+        out.append((s, spell_start))
+        if limit is not None and limit >= 1 and len(out) >= limit:
+            break
+    return out
 
 
-def _write_csv_atomic(path: Path, customer_ids: list[str]) -> None:
+def _write_csv_atomic(path: Path, rows: "list[tuple[str, str]]") -> None:
     """Write the candidate CSV atomically (tmp + os.replace).
 
     Atomic so the poller — which may run concurrently in its 07:35 prep slot —
-    never reads a half-written file. Header column is ``customer_id`` (the name
-    the poller's _load_candidates looks for, case-insensitively).
+    never reads a half-written file. Columns: ``customer_id`` (the name the
+    poller's _load_candidates looks for, case-insensitively) and ``spell_start``
+    (WS8 spell-dedup key component; ignored by older/other readers).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["customer_id"])
-            for cid in customer_ids:
-                writer.writerow([cid])
+            writer.writerow(["customer_id", "spell_start"])
+            for cid, spell_start in rows:
+                writer.writerow([cid, spell_start])
         os.replace(tmp_name, str(path))  # atomic on POSIX
     except Exception:
         # Clean up the tmp file on any failure so we don't litter state/.
@@ -190,7 +221,7 @@ def do_work(args: argparse.Namespace) -> dict:
         now.isoformat(), cohort_date, args.dry_run, out_path,
     )
 
-    candidates = _fetch_candidates(args.limit)
+    candidates = _fetch_candidates(args.limit, cohort_date)
     n = len(candidates)
     log.info("collection_view returned %d distinct customer_ids (ageing %d-%d / X-bucket)",
              n, _AGEING_LO, _AGEING_HI)

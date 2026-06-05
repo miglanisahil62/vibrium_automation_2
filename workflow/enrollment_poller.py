@@ -447,6 +447,30 @@ def _load_candidates(source_csv: PathLike) -> list[str]:
     return cids
 
 
+def _load_candidate_spell(source_csv: PathLike) -> "dict[str, str]":
+    """WS8: read {customer_id: spell_start} from the candidate CSV's optional
+    ``spell_start`` column. Absent column / file → {} (key formatting then falls
+    back to per-day, never crashing). None-collapse only on the falsy filter."""
+    p = Path(source_csv)
+    out: "dict[str, str]" = {}
+    if not p.exists():
+        return out
+    with open(p, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            return out
+        cid_k = next((k for k in reader.fieldnames if k.strip().lower() == "customer_id"), None)
+        sp_k = next((k for k in reader.fieldnames if k.strip().lower() == "spell_start"), None)
+        if cid_k is None or sp_k is None:
+            return out
+        for row in reader:
+            cid = ("" if row.get(cid_k) is None else str(row.get(cid_k))).strip()
+            sp = ("" if row.get(sp_k) is None else str(row.get(sp_k))).strip()
+            if cid and sp:
+                out[cid] = sp
+    return out
+
+
 # ------------------------------------------------------------------ Scratchpad
 
 
@@ -503,13 +527,22 @@ def _profile_to_scratchpad(record: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ Enrollment-key
 
 
-def _format_enrollment_key(template: str, customer_id: str, now: datetime) -> str:
+def _format_enrollment_key(
+    template: str,
+    customer_id: str,
+    now: datetime,
+    spell_start: "str | None" = None,
+) -> str:
     """Render the operator-configurable enrollment_key template.
 
     Recognised placeholders:
       - {customer_id}
       - {YYYY-MM-DD}     IST date
       - {YYYY}, {MM}, {DD}
+      - {spell_start}    WS8 spell-dedup: the start date of the customer's current
+                         continuous overdue spell (from the candidate CSV). Falls
+                         back to today's IST date when absent, so a key template
+                         using {spell_start} degrades to per-day (never crashes).
 
     Unknown placeholders are passed through verbatim — they show up in
     `workflow_runs.enrollment_key`, which makes the misconfiguration
@@ -517,9 +550,11 @@ def _format_enrollment_key(template: str, customer_id: str, now: datetime) -> st
     """
     if now.tzinfo is not None and now.tzinfo != IST:
         now = now.astimezone(IST)
+    spell = spell_start or now.strftime("%Y-%m-%d")
     return (
         template
         .replace("{customer_id}", str(customer_id))
+        .replace("{spell_start}", str(spell))
         .replace("{YYYY-MM-DD}", now.strftime("%Y-%m-%d"))
         .replace("{YYYY}", now.strftime("%Y"))
         .replace("{MM}", now.strftime("%m"))
@@ -758,6 +793,7 @@ def _run_locked(
         )
         try:
             cids = _load_candidates(source_csv)
+            spell_map = _load_candidate_spell(source_csv)  # WS8: {cid: spell_start}
         except (FileNotFoundError, ValueError) as exc:
             log.error("workflow id=%s candidate load failed: %s", wf.id, exc)
             continue
@@ -861,16 +897,24 @@ def _run_locked(
             # slot_count slots and INSERT OR IGNORE silently returns 0 rows,
             # leaving the genuinely-new customers stranded in skipped_cap.
             enroll_key_tmpl = wf.enrollment_key_template
+            # WS8: dedup against ALL-TIME enrollment_keys, not just today's. With
+            # spell-keying ({customer_id}_{spell_start}), a customer enrolled on an
+            # earlier day of the SAME spell carries the same key — so a today-only
+            # check would let them pass the pre-filter, waste a slot on a no-op
+            # INSERT OR IGNORE (UNIQUE index blocks it), and strand genuinely-new
+            # customers. (A cured+relapsed customer gets a NEW spell_start → new
+            # key → not in this set → re-enrolls, as intended.)
             already_keys = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT enrollment_key FROM workflow_runs "
-                    "WHERE workflow_id=? AND substr(enrolled_at_ist,1,10)=?",
-                    (wf.id, today),
+                    "SELECT enrollment_key FROM workflow_runs WHERE workflow_id=?",
+                    (wf.id,),
                 ).fetchall()
             }
             def _key(cid: str) -> str:
-                return _format_enrollment_key(enroll_key_tmpl, cid, n)
+                return _format_enrollment_key(
+                    enroll_key_tmpl, cid, n, spell_start=spell_map.get(cid)
+                )
             new_matched = [c for c in matched if _key(c) not in already_keys]
             skipped_already = len(matched) - len(new_matched)
             if skipped_already:
@@ -906,6 +950,7 @@ def _run_locked(
                 for cid in to_enrol:
                     ek = _format_enrollment_key(
                         wf.enrollment_key_template, cid, n,
+                        spell_start=spell_map.get(cid),
                     )
                     log.info(
                         "[dry-run] would enrol wf=%s cid=%s key=%s",
@@ -919,6 +964,7 @@ def _run_locked(
                     for cid in to_enrol:
                         ek = _format_enrollment_key(
                             wf.enrollment_key_template, cid, n,
+                            spell_start=spell_map.get(cid),
                         )
                         cur = conn.execute(
                             """

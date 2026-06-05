@@ -121,9 +121,11 @@ def main() -> None:
         # the first-create INSERT already set ACTIVE, and on a re-seed we must
         # preserve an operator's deliberate PAUSED state (un-pausing would
         # silently restart enrollment). Re-seed is status-neutral.
+        # WS8: also pin the spell-dedup enrollment_key_template so the poller
+        # enrolls each customer ONCE per overdue spell (not once per day).
         conn.execute(
-            "UPDATE workflows SET active_version_id=? WHERE id=?",
-            (version_id, workflow_id),
+            "UPDATE workflows SET active_version_id=?, enrollment_key_template=? WHERE id=?",
+            (version_id, "{customer_id}_{spell_start}", workflow_id),
         )
         conn.commit()
 
