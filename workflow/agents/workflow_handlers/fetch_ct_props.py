@@ -33,10 +33,48 @@ Casing note (per docs/phase_0a_decision.md):
 """
 from __future__ import annotations
 
+import json
+import logging
+import sqlite3
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from workflow import clevertap_profile
 from workflow.agents.workflow_handlers.types import NodeConfig, NodeResult, Run
+
+log = logging.getLogger("workflow.fetch_ct_props")
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _read_cached_record(txn: Any, customer_id: str) -> "dict | None":
+    """WS1 cache-first: read today's prefetched CT record from ct_profile_cache
+    (same workflow.db the executor's `txn` is on). Returns the CT `record` dict
+    on a 'found' hit, else None (caller falls back to a live get_profile).
+
+    Avoids a live CT call per run — decisive when the executor walks tens of
+    thousands of X-bucket runs. Tolerant of a missing table / bad JSON (logs +
+    returns None so the live path takes over)."""
+    if txn is None:
+        return None
+    try:
+        cohort_date = datetime.now(_IST).strftime("%Y-%m-%d")
+        row = txn.execute(
+            "SELECT profile_json FROM ct_profile_cache "
+            "WHERE customer_id = ? AND cohort_date = ? AND status = 'found'",
+            (str(customer_id), cohort_date),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        log.warning("ct_profile_cache unavailable (%s) — live fetch for cid=%s",
+                    exc, customer_id)
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except (ValueError, TypeError) as exc:
+        log.warning("ct_profile_cache bad JSON cid=%s (%s) — live fetch", customer_id, exc)
+        return None
 
 
 # Allowed schema types. Extending this requires updating the coercion table
@@ -146,7 +184,11 @@ def execute(
                 ready_at_ist=None,
             )
 
-    record = clevertap_profile.get_profile(run.customer_id)
+    # Cache-first (WS1): read the day's prefetched profile from ct_profile_cache
+    # (this same workflow.db `txn`); live get_profile only on a miss.
+    record = _read_cached_record(txn, run.customer_id)
+    if record is None:
+        record = clevertap_profile.get_profile(run.customer_id)
     if record is None:
         return NodeResult(
             next_edge="not_found",
