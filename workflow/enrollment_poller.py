@@ -85,7 +85,10 @@ MAX_NEW_ENROLLMENTS_PER_TICK = int(os.environ.get("WF_MAX_ENROLL_PER_TICK", "200
 # workflow exceeds this value, the poller treats it as a mis-configured
 # entry condition and refuses to enrol any of them. Operator runs with
 # ``--force`` to override after manual review.
-PER_WORKFLOW_HARD_ABORT = 5000
+# Env-overridable: the X-bucket (ageing 1-30) legitimately matches ~16k with the
+# always-true gate, so the default 5000 is too low for it. run.sh sets a generous
+# value; spell-dedup + the daily cap are the real guards against over-enrollment.
+PER_WORKFLOW_HARD_ABORT = int(os.environ.get("WF_PER_WORKFLOW_HARD_ABORT", "5000"))
 
 # Narrower enrollment window: end at 18:00 IST (one hour stricter than the
 # 19:00 RBI calling window).

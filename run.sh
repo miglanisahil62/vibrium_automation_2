@@ -60,7 +60,10 @@ SHADOW_FLAG="--shadow"
 FLAGS=()
 case "${MODE}" in
     executor)
-        TIMEOUT_SEC=900;  FLAGS=(--batch-limit 200) ;;
+        # Bigger batch — the X-bucket (ageing 1-30) enrolls ~16k/day and the
+        # executor must walk them to FIRE/terminal. Cache-first FETCH_CT_PROPS
+        # makes a large batch cheap (no per-run CT call).
+        TIMEOUT_SEC=1500;  FLAGS=(--batch-limit 5000) ;;
     scheduler)
         TIMEOUT_SEC=1500
         FLAGS=(--vibrium-db "${VIBRIUM_DB}" --ct-creds "${CT_CREDS}" --hourly-call-cap "${HOURLY_CALL_CAP}")
@@ -73,10 +76,15 @@ case "${MODE}" in
         # large 1–30 base + CT rate-limiting can't blow the enrollment timeout.
         TIMEOUT_SEC=1800 ;;
     enrollment)
-        TIMEOUT_SEC=900
+        TIMEOUT_SEC=1500
         # Enable the 07:00 pre-window prep slot (firing stays gated at 08:00 by
         # the scheduler). Exported BEFORE python starts so the poller reads it.
-        export WF_ENROLLMENT_PREP_START_HOUR="${WF_ENROLLMENT_PREP_START_HOUR:-7}" ;;
+        export WF_ENROLLMENT_PREP_START_HOUR="${WF_ENROLLMENT_PREP_START_HOUR:-7}"
+        # X-bucket (ageing 1-30) legitimately matches ~16k with the always-true
+        # gate, so the default 5000 hard-abort + 200/tick throttles would block
+        # the auto-run. Raise both (spell-dedup + daily-cap are the real guards).
+        export WF_PER_WORKFLOW_HARD_ABORT="${WF_PER_WORKFLOW_HARD_ABORT:-60000}"
+        export WF_MAX_ENROLL_PER_TICK="${WF_MAX_ENROLL_PER_TICK:-20000}" ;;
     alerts)
         TIMEOUT_SEC=300 ;;
     digest)
