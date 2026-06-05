@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import io
 import json
 import logging
@@ -40,7 +41,19 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 IST = ZoneInfo("Asia/Kolkata")
+
+# WS10: the CT profile property + value written for exhausted-still-due
+# customers, and the ONLY assignment reason that qualifies for it. Disputes,
+# timeouts and review-exits are DIFFERENT handoffs and must NOT be flagged for
+# agent calling — the CRITICAL GUARD from the plan ("NEVER set it for customers
+# who never qualified"). Only a customer who completed their full VB call-day
+# budget and is still due (reason='max_attempts_reached') is agent-recommended.
+CT_ALLOCATION_PROPERTY = "coll_agent_allocation"
+CT_ALLOCATION_VALUE = "Agent_calling_Recommended"
+CT_QUALIFYING_REASON = "max_attempts_reached"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +75,7 @@ REASON_LABELS = {
     "disposition_timeout_24h":  "24h timeout",
     "rtp_needs_review":         "RTP review",
     "unhandled_disposition":    "Unhandled",
+    "loop_error":               "Loop error (engine)",
 }
 
 
@@ -75,6 +89,11 @@ def parse_args() -> argparse.Namespace:
                     help="Only rows assigned at or after HH:MM IST today (e.g. 08:00).")
     ap.add_argument("--all-time", action="store_true",
                     help="Include all rows regardless of date (backfill / testing).")
+    ap.add_argument("--ct-creds", default=None,
+                    help="CleverTap creds JSON path (default: CT_CREDS_FILE env "
+                         "→ ~/Collections_v3/Clevertap campaigns/config_CT_credentials.json).")
+    ap.add_argument("--no-ct-write", action="store_true",
+                    help="Skip the coll_agent_allocation CT write (email only).")
     return ap.parse_args()
 
 
@@ -264,6 +283,153 @@ def _send_email(
     log.info("sent: %r → %s", subject, RECIPIENTS)
 
 
+def _write_ct_allocation(
+    db_path: str,
+    *,
+    dry_run: bool,
+    creds_path: "str | None",
+) -> dict:
+    """WS10 — write ``coll_agent_allocation = Agent_calling_Recommended`` to CT
+    for each EXHAUSTED-still-due customer.
+
+    Scope (the CRITICAL GUARD): only ``agent_assignments`` rows with
+    ``reason = 'max_attempts_reached'`` AND ``ct_allocation_written_at_ist IS
+    NULL`` — i.e. customers who actually completed their VB call-day budget and
+    are still due, and whom we have NOT already flagged. ``max_attempts_reached``
+    is a CLEAN terminal: engine faults in the call loop route to a SEPARATE
+    ``loop_error`` ASSIGN node, so an error-routed customer can never inherit the
+    auto-recommend flag (see generate_vb_collections_v2 ASSIGN_LOOP_ERR). This is
+    a targeted per-ID profile write (never a segment/broad write), sourced from
+    the authoritative table, so a customer who never qualified can never be
+    touched.
+
+    Delivery is **at-least-once, idempotent at CT** (NOT strictly exactly-once):
+    a successful CT write stamps ``ct_allocation_written_at_ist`` so the
+    every-2h cron normally never re-writes. The one residual re-write window is a
+    crash AFTER CT persists but BEFORE the per-customer commit lands — the next
+    pass would re-write that one customer. That is harmless: writing the same
+    scalar property value again is a CT no-op (master-auditor WS10 P1-2). A
+    pre-write reservation would only trade this for the worse "stamped-but-not-
+    written" failure, so we accept at-least-once.
+
+    ``dry_run`` validates the CT payload (CT ``?dryRun=1``) and writes NEITHER CT
+    nor the DB marker. A per-ID CT failure is logged + counted and left unstamped
+    (retried next pass) — it never aborts the batch or the email.
+
+    Returns {qualified, attempted, written, failed, skipped_dupe}.
+    """
+    from workflow import clevertap_profile
+
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=30)
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.row_factory = sqlite3.Row
+        # Unwritten qualified rows, any date — the NULL marker is the idempotency
+        # guard, and scanning all-unwritten self-heals a day the job missed.
+        # DISTINCT customer_id: agent_assignments has no UNIQUE constraint, so a
+        # customer with two assignment rows must be written (and stamped) once.
+        rows = conn.execute(
+            "SELECT id, customer_id FROM agent_assignments "
+            "WHERE reason = ? AND ct_allocation_written_at_ist IS NULL "
+            "ORDER BY id",
+            (CT_QUALIFYING_REASON,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        # Column absent → migration 004 not applied. Loud, but non-fatal to the
+        # email (the handoff CSV still goes out); surface so it gets fixed.
+        log.error("ct_allocation write skipped — DB not migrated (%s)", exc)
+        if conn is not None:
+            conn.close()
+        return {"qualified": 0, "attempted": 0, "written": 0,
+                "failed": 0, "skipped_dupe": 0, "error": str(exc)}
+
+    # Collapse to one write per customer_id; remember every row id to stamp.
+    ids_by_cid: dict = {}
+    for r in rows:
+        ids_by_cid.setdefault(str(r["customer_id"]), []).append(r["id"])
+    qualified = len(ids_by_cid)
+    skipped_dupe = len(rows) - qualified
+
+    stats = {"qualified": qualified, "attempted": 0, "written": 0,
+             "failed": 0, "skipped_dupe": skipped_dupe}
+    if qualified == 0:
+        conn.close()
+        log.info("ct_allocation: 0 unwritten qualified (reason=%s) customers",
+                 CT_QUALIFYING_REASON)
+        return stats
+
+    log.info("ct_allocation: %d qualified customer(s) to flag %s=%s (dry_run=%s)",
+             qualified, CT_ALLOCATION_PROPERTY, CT_ALLOCATION_VALUE, dry_run)
+
+    now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    for cid, row_ids in ids_by_cid.items():
+        stats["attempted"] += 1
+        try:
+            res = clevertap_profile.set_profile(
+                cid,
+                {CT_ALLOCATION_PROPERTY: CT_ALLOCATION_VALUE},
+                dry_run=dry_run,
+                creds_path=Path(creds_path) if creds_path else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad id must not abort the batch
+            stats["failed"] += 1
+            log.warning("ct_allocation FAILED cid=%s (%s) — left unstamped, "
+                        "will retry next pass", cid, exc)
+            continue
+        if not res.success:
+            stats["failed"] += 1
+            log.warning("ct_allocation rejected cid=%s code=%s — left unstamped",
+                        cid, res.error_code)
+            continue
+        stats["written"] += 1
+        if not dry_run:
+            # Stamp every assignment row for this customer so a duplicate row
+            # can't re-trigger the write on a later pass.
+            conn.executemany(
+                "UPDATE agent_assignments SET ct_allocation_written_at_ist = ? "
+                "WHERE id = ?",
+                [(now_ist, rid) for rid in row_ids],
+            )
+            conn.commit()
+
+    conn.close()
+    log.info("ct_allocation done: %s", stats)
+    return stats
+
+
+def _ct_status_html(ct_stats: "dict | None") -> str:
+    """Small CT-write status block for the email (WS10 P1-3 — visibility)."""
+    if not ct_stats:
+        return ""
+    failed = ct_stats.get("failed", 0)
+    err = ct_stats.get("error")
+    written = ct_stats.get("written", 0)
+    if err:
+        return (
+            "<div style='margin-top:16px;padding:12px 16px;background:#f8d7da;"
+            "border:2px solid #dc3545;border-radius:4px;color:#721c24'>"
+            f"<b>🚨 CT allocation write skipped — {html.escape(str(err))}</b>"
+            "<p style='margin:6px 0 0;font-size:12px'>Qualified customers were "
+            "NOT flagged <code>coll_agent_allocation</code> this run. Likely "
+            "migration 004 not applied. Fix + re-run.</p></div>"
+        )
+    color, border = ("#721c24", "#dc3545") if failed else ("#155724", "#28a745")
+    head = ("🚨 CT allocation — some writes FAILED" if failed
+            else "✓ CT allocation written")
+    return (
+        f"<div style='margin-top:16px;padding:10px 14px;background:#f4f8f4;"
+        f"border-left:4px solid {border};border-radius:3px;color:{color};font-size:12px'>"
+        f"<b>{head}</b><br>"
+        f"coll_agent_allocation=Agent_calling_Recommended · "
+        f"qualified={ct_stats.get('qualified', 0)} · written={written} · "
+        f"failed={failed} · dup-rows-skipped={ct_stats.get('skipped_dupe', 0)}"
+        + ("<br><span style='font-size:11px'>Failed IDs are left un-flagged and "
+           "retried on the next pass.</span>" if failed else "")
+        + "</div>"
+    )
+
+
 def main() -> None:
     args = parse_args()
     now = datetime.now(IST)
@@ -274,8 +440,26 @@ def main() -> None:
     rows = _fetch_assignments(args.workflow_db, args.since, args.all_time)
     log.info("%d assignment rows found", len(rows))
 
+    # WS10 — flag exhausted-still-due customers for agent calling in CleverTap.
+    # Runs BEFORE the email and INDEPENDENTLY of the email's date/since window:
+    # it has its own unwritten-qualified scan + idempotency marker, so it fires
+    # even on a pass where there are no NEW rows to email. --no-ct-write opts out.
+    ct_stats = None
+    if not args.no_ct_write:
+        ct_stats = _write_ct_allocation(
+            args.workflow_db, dry_run=args.dry_run, creds_path=args.ct_creds,
+        )
+
+    # WS10 P1-3 — a CT-write rejection must never be invisible. If any per-ID
+    # write failed (or the table wasn't migrated), log it at ERROR (so it shows
+    # in the failure-marker log tail) and surface it in the email body.
+    ct_failed = bool(ct_stats and (ct_stats.get("failed") or ct_stats.get("error")))
+    if ct_failed:
+        log.error("ct_allocation had failures this pass: %s — qualified customers "
+                  "left UN-flagged, will retry next pass", ct_stats)
+
     subject = _build_subject(rows, date_str)
-    html_body = _build_html(rows, date_str)
+    html_body = _build_html(rows, date_str) + _ct_status_html(ct_stats)
     csv_bytes = _build_csv(rows)
 
     if args.dry_run:
@@ -284,6 +468,7 @@ def main() -> None:
         print(f"\nSubject: {subject}")
         print(f"To: {', '.join(RECIPIENTS)}")
         print(f"CSV rows: {len(rows)}")
+        print(f"CT allocation (dry-run): {ct_stats}")
         if rows:
             print("\nFirst row sample:")
             for k, v in list(rows[0].items())[:8]:
@@ -291,7 +476,18 @@ def main() -> None:
         return
 
     if len(rows) == 0:
-        log.info("no assignments today — skipping email")
+        # No new handoff rows to email. If the CT write flagged earlier-unwritten
+        # qualifiers OR hit failures, send a short status email so the CT-write
+        # half is never silent; otherwise skip (nothing to report).
+        wrote = ct_stats.get("written") if ct_stats else 0
+        if ct_failed or wrote:
+            _send_email(args.gmail_config,
+                        f"[VB Bot] No new agent assignments — {date_str} "
+                        f"(CT: {wrote} flagged, {ct_stats.get('failed', 0)} failed)",
+                        _build_html(rows, date_str) + _ct_status_html(ct_stats),
+                        csv_bytes, csv_filename)
+        else:
+            log.info("no assignments to email + no CT activity — skipping email")
         return
 
     _send_email(args.gmail_config, subject, html_body, csv_bytes, csv_filename)

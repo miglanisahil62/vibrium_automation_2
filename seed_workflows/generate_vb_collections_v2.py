@@ -221,6 +221,14 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
     ASSIGN_TIMEOUT  = n(0x0e)
     TERM_ASSIGNED   = n(0x0f)
     TERM_SUPPRESSED = n(0x10)
+    # ASSIGN_LOOP_ERR is the sink for ENGINE faults in the call loop (a COUNTER
+    # or WAIT_UNTIL 'error' edge) — distinct from ASSIGN_LIMIT (genuine budget
+    # exhaustion). Keeping them separate means reason='max_attempts_reached' is a
+    # CLEAN terminal: the WS10 exit emailer's coll_agent_allocation CT write keys
+    # on it, so a config/scratchpad fault must NOT masquerade as "completed the
+    # full call budget" (master-auditor WS10 P1-1). Both still route to a human
+    # agent — only the auto-recommend flag is reserved for true exhaustion.
+    ASSIGN_LOOP_ERR = n(0x11)
 
     p = label_prefix
     use_counter = total_calls >= 2
@@ -286,21 +294,21 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — PTP date",
             "config": {"relative": "T+3 day at 08:00"},
-            "edges": {"next": FIRE, "error": ASSIGN_LIMIT},
+            "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": WAIT_EOD,
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — EOD call",
             "config": {"relative": "T+0 day at 18:00"},
-            "edges": {"next": FIRE, "error": ASSIGN_LIMIT},
+            "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": WAIT_CB,
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — Callback",
             "config": {"relative": "T+1 day at 08:00"},
-            "edges": {"next": FIRE, "error": ASSIGN_LIMIT},
+            "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": ASSIGN_ESC,
@@ -320,8 +328,8 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
                 "config": {"name": "attempts", "limit": total_calls},
                 "edges": {
                     "under_limit": WAIT_RETRY,
-                    "at_limit":    ASSIGN_LIMIT,
-                    "error":       ASSIGN_LIMIT,
+                    "at_limit":    ASSIGN_LIMIT,    # genuine budget exhaustion → max_attempts_reached
+                    "error":       ASSIGN_LOOP_ERR,  # counter/config fault → loop_error (NOT auto-recommended)
                 },
             },
             {
@@ -329,7 +337,7 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
                 "type": "WAIT_UNTIL",
                 "label": f"{p}: Wait — Retry T+1",
                 "config": {"relative": "T+1 day at 08:00"},
-                "edges": {"next": FIRE, "error": ASSIGN_LIMIT},
+                "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
             },
         ]
     # else total_calls == 1: BRANCH "retry" edge already points to ASSIGN_LIMIT.
@@ -340,6 +348,17 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "type": "ASSIGN_AGENT",
             "label": f"{p}: Assign — Max Attempts",
             "config": {"reason": "max_attempts_reached"},
+            "edges": {"next": TERM_ASSIGNED, "error": TERM_ASSIGNED},
+        },
+        {
+            "node_id": ASSIGN_LOOP_ERR,
+            "type": "ASSIGN_AGENT",
+            "label": f"{p}: Assign — Loop Error",
+            # Engine fault in the call loop (COUNTER/WAIT_UNTIL 'error' edge), NOT
+            # genuine budget exhaustion. Still handed to an agent, but a distinct
+            # reason so WS10's coll_agent_allocation auto-recommend (keyed on
+            # max_attempts_reached) never fires for an error-routed customer.
+            "config": {"reason": "loop_error"},
             "edges": {"next": TERM_ASSIGNED, "error": TERM_ASSIGNED},
         },
         {
