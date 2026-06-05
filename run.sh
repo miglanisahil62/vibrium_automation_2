@@ -93,15 +93,17 @@ case "${MODE}" in
         TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
     enrollment_funnel_emailer)
         TIMEOUT_SEC=300 ;;  # standalone script — not routed via orchestrator
+    self_cure)
+        TIMEOUT_SEC=300 ;;  # WS14 standalone self-cure — not routed via orchestrator
     *)
-        echo "unknown mode '${MODE}' (executor|scheduler|ingest|prefetch|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer)" >&2
+        echo "unknown mode '${MODE}' (executor|scheduler|ingest|prefetch|enrollment|alerts|digest|agent_assignment_emailer|enrollment_funnel_emailer|self_cure)" >&2
         exit 2 ;;
 esac
 
 echo "===== $(date '+%F %T %Z') — starting wf ${MODE} (timeout=${TIMEOUT_SEC}s, shadow=${SHADOW_FLAG:-off}) =====" >> "${LOG_FILE}"
 
-# agent_assignment_emailer is a standalone script — not an orchestrator mode.
-if [[ "${MODE}" == "agent_assignment_emailer" || "${MODE}" == "enrollment_funnel_emailer" ]]; then
+# These are standalone scripts — not orchestrator modes.
+if [[ "${MODE}" == "agent_assignment_emailer" || "${MODE}" == "enrollment_funnel_emailer" || "${MODE}" == "self_cure" ]]; then
     timeout --kill-after=30 "${TIMEOUT_SEC}" \
         python3 "${BASE_DIR}/scripts/${MODE}.py" \
             --workflow-db "${WORKFLOW_DB}" \
