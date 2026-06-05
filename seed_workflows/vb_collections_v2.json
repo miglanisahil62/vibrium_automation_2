@@ -6,7 +6,7 @@
       "label": "Enroll",
       "config": {
         "source_csv": "{csv_dir}/dpd1_candidates_{YYYY-MM-DD}.csv",
-        "condition_expr": "dpd >= 1"
+        "condition_expr": "True"
       },
       "edges": {
         "next": "00000000-0000-4000-a000-000000000002"
@@ -42,9 +42,9 @@
     {
       "node_id": "00000000-0000-4000-a000-000000000004",
       "type": "CONDITION",
-      "label": "DPD >= 1 (still overdue)?",
+      "label": "X-bucket member (route to classify)",
       "config": {
-        "expr": "dpd >= 1"
+        "expr": "True"
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000010",

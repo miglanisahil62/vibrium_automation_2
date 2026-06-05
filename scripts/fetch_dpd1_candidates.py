@@ -67,17 +67,22 @@ log = logging.getLogger(Path(__file__).stem)
 # ─── Timezone (Stashfin is IST-anchored) ───────────────────────────────────
 IST = ZoneInfo("Asia/Kolkata")
 
-# DPD-1 selector. collection_view's days-past-due column is ``ageing`` (NOT
-# ``dpd`` — that column does not exist there). We target exactly ageing = 1.
-# Parameterised below; no string interpolation into SQL.
+# X-bucket selector. collection_view's days-past-due column is ``ageing`` (NOT
+# ``dpd`` — that column does not exist there). We target the whole early bucket
+# ageing 1..30. Parameterised below; no string interpolation into SQL.
+# (Membership in collection_view IS the authoritative DPD filter — DPD 0 = cured =
+# absent from the view. The CT `dpd` profile property is sparse/unreliable, so the
+# graph does NOT re-gate on it; see ENROLL_CONDITION_EXPR in generate_vb_collections_v2.)
 _CANDIDATE_SQL = """
     SELECT DISTINCT customer_id
     FROM sttash_website_live.collection_view
-    WHERE ageing = %(ageing)s
+    WHERE ageing BETWEEN %(lo)s AND %(hi)s
       AND customer_id IS NOT NULL
 """
 
-_TARGET_AGEING = 1
+_AGEING_LO = 1
+_AGEING_HI = 30
+_TARGET_AGEING = _AGEING_LO  # retained for log/back-compat messages
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,7 +149,7 @@ def _fetch_candidates(limit: "int | None") -> list[str]:
         df = query(
             cn,
             _CANDIDATE_SQL,
-            params={"ageing": _TARGET_AGEING},
+            params={"lo": _AGEING_LO, "hi": _AGEING_HI},
             rationale="vibrium-workflow daily DPD-1 enrollment candidate fetch",
         )
 
@@ -187,8 +192,8 @@ def do_work(args: argparse.Namespace) -> dict:
 
     candidates = _fetch_candidates(args.limit)
     n = len(candidates)
-    log.info("collection_view returned %d distinct ageing=%d customer_ids",
-             n, _TARGET_AGEING)
+    log.info("collection_view returned %d distinct customer_ids (ageing %d-%d / X-bucket)",
+             n, _AGEING_LO, _AGEING_HI)
 
     # 0 rows is NORMAL for ageing == 1: on many days no customer is exactly one
     # day past due — the DPD-1 slice populates as customers cross the boundary.
@@ -199,8 +204,8 @@ def do_work(args: argparse.Namespace) -> dict:
     # and enrolls nobody, rather than erroring on a missing file) and exit 0
     # (no false alert). Distinction: exception = failure; 0 rows = empty day.
     if n == 0:
-        log.info("0 DPD-1 candidates today (ageing=%d) — normal; writing empty cohort",
-                 _TARGET_AGEING)
+        log.info("0 X-bucket candidates today (ageing %d-%d) — writing empty cohort",
+                 _AGEING_LO, _AGEING_HI)
 
     if args.dry_run:
         log.info("--dry-run set; not writing %s (%d rows planned)", out_path, n)

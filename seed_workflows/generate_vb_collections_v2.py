@@ -80,7 +80,13 @@ FETCH_PROPERTIES = {
 # so segments stay defined in exactly one place — this table. Customers who
 # match no segment terminate OUT_OF_SCOPE in-graph.
 ENROLL_SOURCE_CSV = "{csv_dir}/dpd1_candidates_{YYYY-MM-DD}.csv"
-ENROLL_CONDITION_EXPR = "dpd >= 1"
+# Enrollment gate is ALWAYS-TRUE: the candidate CSV is already the authoritative
+# DPD filter (collection_view ageing 1-30 = currently overdue; DPD 0 = cured =
+# absent). The CT `dpd` profile property is sparse/unreliable (null for ~80% of a
+# real DPD cohort), so re-gating on `dpd >= 1` here silently discarded thousands
+# of genuinely-overdue customers. Membership in the CSV IS eligibility; segment
+# assignment (incl. OUT_OF_SCOPE) is decided in the graph.
+ENROLL_CONDITION_EXPR = "True"
 
 # ─── THE SEGMENT REGISTRY ────────────────────────────────────────────────────
 # Edit this table to add / modify segments. Order matters: first match wins, so
@@ -414,11 +420,14 @@ def build_graph() -> dict:
         {
             "node_id": r(_IDX_DPD_COND),
             "type": "CONDITION",
-            # Targeting is DPD-1 (collection_view ageing == 1, selected at the
-            # 07:30 fetch). dpd >= 1 here is a freshness check: route only
-            # still-overdue customers onward; dpd == 0 (cured) -> INELIGIBLE.
-            "label": "DPD >= 1 (still overdue)?",
-            "config": {"expr": "dpd >= 1"},
+            # Targeting is the X-bucket (collection_view ageing 1-30, selected at
+            # the 07:30 fetch). The CT `dpd` property is sparse/unreliable, so we
+            # do NOT re-gate on it here (that dropped ~80% of the real cohort to
+            # INELIGIBLE). Always route onward to segment classification; the
+            # authoritative still-overdue/cured guard is the SCHEDULER's paid-check
+            # (paid_today>=overdue + not_in_collection_view) before every fire.
+            "label": "X-bucket member (route to classify)",
+            "config": {"expr": "True"},
             "edges": {
                 "true":  r(_CLASSIFY_BASE),   # first segment's classify node
                 "false": r(_IDX_TERM_INELIGIBLE),
