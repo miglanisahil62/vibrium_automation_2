@@ -305,21 +305,27 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "node_id": WAIT_PTP,
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — PTP date",
-            "config": {"relative": "T+3 day at 08:00"},
+            # WS7/2c: a PTP follow-up is a committed promise → 'reserve' lane so
+            # it jumps the scheduler queue ahead of general first-attempts.
+            "config": {"relative": "T+3 day at 08:00",
+                       "reset_keys": {"priority_class": "reserve"}},
             "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": WAIT_EOD,
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — EOD call",
-            "config": {"relative": "T+0 day at 18:00"},
+            "config": {"relative": "T+0 day at 18:00",
+                       "reset_keys": {"priority_class": "reserve"}},
             "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
             "node_id": WAIT_CB,
             "type": "WAIT_UNTIL",
             "label": f"{p}: Wait — Callback",
-            "config": {"relative": "T+1 day at 08:00"},
+            # Customer-requested callback → 'reserve' (jump the queue).
+            "config": {"relative": "T+1 day at 08:00",
+                       "reset_keys": {"priority_class": "reserve"}},
             "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {
@@ -364,7 +370,9 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
                     "rotate_day_offset": 1,
                     "rotate_hours_key": "best_hours",
                     "rotate_index_key": "day_index",
-                    "reset_keys": {"attempts_today": 0},
+                    # reset attempts_today (new day) + priority_class → general
+                    # (a next-day retry is a normal fire, not a reserve follow-up).
+                    "reset_keys": {"attempts_today": 0, "priority_class": "general"},
                 },
                 "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
             },
@@ -430,7 +438,10 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
             "label": f"{p}: Wait — Same-day retry (+1h)",
             # ≥1h gap before the same-day reattempt; the gate already verified
             # there's room before 19:00. attempts_today was bumped at the gate.
-            "config": {"relative": "T+1 hour"},
+            # priority_class → general (a no-connect reattempt is not a reserve
+            # follow-up; reserve is for callback/PTP/Agree promises only).
+            "config": {"relative": "T+1 hour",
+                       "reset_keys": {"priority_class": "general"}},
             "edges": {"next": FIRE, "error": ASSIGN_LOOP_ERR},
         },
         {

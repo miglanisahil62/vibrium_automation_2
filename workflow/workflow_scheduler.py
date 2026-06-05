@@ -531,6 +531,10 @@ def run(
             ORDER BY
                 -- 1) spillover: yesterday's un-fired rows clear first.
                 CASE WHEN substr(pa.scheduled_at_ist, 1, 10) < ? THEN 0 ELSE 1 END,
+                -- 1b) WS7/2c RESERVED BANDWIDTH: callback / unfulfilled-PTP-Agree
+                --     follow-ups (priority_class='reserve') jump the queue ahead of
+                --     general first-attempts — a committed promise is highest-intent.
+                CASE WHEN pa.priority_class = 'reserve' THEN 0 ELSE 1 END,
                 -- 2) WS7: HIGH-RISK FIRST. coll_collection_risk_segmentation is
                 --    written to the run scratchpad by FETCH_CT_PROPS (lower band =
                 --    higher risk: 0-4 High → 5-7 Mid → 8-10 Low). Runs with no

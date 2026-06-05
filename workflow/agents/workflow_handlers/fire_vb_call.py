@@ -97,6 +97,15 @@ def execute(
             ready_at_ist=None,
         )
 
+    # WS7/2c reserved-bandwidth: stamp priority_class from scratchpad ('reserve'
+    # for callback / unfulfilled-PTP/Agree follow-ups set by the WAIT_CB/PTP/EOD
+    # branches; 'general' otherwise). The scheduler ranks reserve rows first so a
+    # committed promise jumps the queue ahead of general first-attempts. Default
+    # 'general' so any unstamped run is treated as a normal fire.
+    priority_class = str(run.scratchpad.get("priority_class") or "general")
+    if priority_class not in ("reserve", "general"):
+        priority_class = "general"
+
     # scheduled_at_ist = now: the workflow_scheduler picks up PENDING rows
     # whose scheduled_at_ist <= now. Setting it to now means "fire on the
     # next scheduler tick" (typically within 5 minutes).
@@ -104,8 +113,8 @@ def execute(
         """
         INSERT OR IGNORE INTO wf_pending_actions
             (run_id, node_id, attempt_count, customer_id,
-             scheduled_at_ist, status, created_at_ist, cohort_name)
-        VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
+             scheduled_at_ist, status, created_at_ist, cohort_name, priority_class)
+        VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
         """,
         (
             run.id,
@@ -115,6 +124,7 @@ def execute(
             now_ist,
             now_ist,
             cohort_name,
+            priority_class,
         ),
     )
 

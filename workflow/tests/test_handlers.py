@@ -45,14 +45,9 @@ from workflow.agents.workflow_handlers import wait_until as wait_mod
 from workflow.wf_store import get_workflow_db, transaction
 
 
-# Migration 001 is the file "001_init.py" — Python doesn't allow ``import
-# 001_init`` so we do a runtime import via importlib.
-import importlib.util
-_MIGRATION_PATH = Path(__file__).resolve().parent.parent / "migrations" / "001_init.py"
-_spec = importlib.util.spec_from_file_location("_mig_001", _MIGRATION_PATH)
-_mig_001 = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
-assert _spec is not None and _spec.loader is not None
-_spec.loader.exec_module(_mig_001)
+# Apply the FULL migration chain (001..NNN) so the test schema matches prod —
+# FIRE now writes priority_class (migration 005), so 001 alone is insufficient.
+from workflow.migrations import runner as _mig_runner
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ct_profile_response.json"
@@ -65,9 +60,9 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ct_profile_response.json"
 
 @pytest.fixture
 def workflow_db(tmp_path: Path):
-    """Fresh workflow.db with schema 001 applied."""
+    """Fresh workflow.db with the FULL migration chain applied (matches prod)."""
     db_path = tmp_path / "workflow.db"
-    _mig_001.up(db_path)
+    _mig_runner.run(str(db_path), str(tmp_path / "vibrium.db"))
     conn = get_workflow_db(db_path)
     yield conn
     conn.close()
@@ -470,6 +465,23 @@ class TestFireVbCall:
         ).fetchone()
         assert row["attempt_count"] == 2          # fire_seq wins over attempts
         assert result.scratchpad_patch["fire_seq"] == 3   # self-bumped
+
+    def test_priority_class_stamped_from_scratchpad(self, workflow_db, base_run: Run):
+        # WS7/2c: reserve marker in scratchpad → row.priority_class='reserve'.
+        base_run.scratchpad = {"priority_class": "reserve"}
+        node = _node("FIRE_VB_CALL", {})
+        with transaction(workflow_db):
+            fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        row = workflow_db.execute("SELECT priority_class FROM wf_pending_actions").fetchone()
+        assert row["priority_class"] == "reserve"
+
+    def test_priority_class_defaults_general(self, workflow_db, base_run: Run):
+        base_run.scratchpad = {}     # no marker → general
+        node = _node("FIRE_VB_CALL", {})
+        with transaction(workflow_db):
+            fire_mod.execute(node, base_run, ctx=None, txn=workflow_db)
+        row = workflow_db.execute("SELECT priority_class FROM wf_pending_actions").fetchone()
+        assert row["priority_class"] == "general"
 
     def test_fire_seq_same_node_two_attempts_distinct_rows(self, workflow_db, base_run: Run):
         # Two fires at the SAME node with the bumped fire_seq → two distinct rows
@@ -1189,7 +1201,8 @@ class TestSameDayGate:
         base_run.scratchpad = {"attempts_today": 0}
         r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
         assert r.next_edge == "retry_today"
-        assert r.scratchpad_patch == {"attempts_today": 1}
+        # P2-2: also resets priority_class→general (no-connect reattempt isn't reserve)
+        assert r.scratchpad_patch == {"attempts_today": 1, "priority_class": "general"}
 
     def test_next_day_when_budget_spent(self, monkeypatch, base_run: Run):
         # max_per_day=3 → max retries=2; attempts_today=2 → no budget.
@@ -1197,7 +1210,7 @@ class TestSameDayGate:
         base_run.scratchpad = {"attempts_today": 2}
         r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
         assert r.next_edge == "next_day"
-        assert r.scratchpad_patch == {}
+        assert r.scratchpad_patch == {"priority_class": "general"}
 
     def test_next_day_when_window_closing(self, monkeypatch, base_run: Run):
         # 18:30 + 1h = 19:30 → past 19:00 → no room today → next_day.

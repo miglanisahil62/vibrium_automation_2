@@ -97,7 +97,12 @@ def execute(
     if has_budget and room_today:
         return NodeResult(
             next_edge="retry_today",
-            scratchpad_patch={key: attempts_today + 1},
+            # WS7/2c defense-in-depth (P2-2): a no-connect reattempt is NOT a
+            # reserve follow-up — reset priority_class to 'general' here so a
+            # stale 'reserve' (from a prior PTP/Agree fire that then no-connected)
+            # can never leak into the retry fire, independent of the downstream
+            # WAIT node's reset.
+            scratchpad_patch={key: attempts_today + 1, "priority_class": "general"},
             side_effect=(
                 f"SAME_DAY_GATE retry_today: retries {attempts_today}→"
                 f"{attempts_today + 1} (max {max_per_day - 1}), "
@@ -110,7 +115,7 @@ def execute(
               else f"no room today (next ~{candidate.strftime('%H:%M')} >= {window_close_hour}:00)")
     return NodeResult(
         next_edge="next_day",
-        scratchpad_patch={},
+        scratchpad_patch={"priority_class": "general"},  # P2-2: no-connect → general
         side_effect=f"SAME_DAY_GATE next_day: {reason}",
         ready_at_ist=None,
     )

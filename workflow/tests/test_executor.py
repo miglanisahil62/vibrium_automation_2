@@ -151,9 +151,11 @@ def _six_node_graph() -> Dict[str, Any]:
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """Fresh workflow.db with migration 001 applied."""
+    """Fresh workflow.db with the FULL migration chain (FIRE writes priority_class
+    from migration 005, so 001 alone is insufficient)."""
+    from workflow.migrations import runner as _runner
     p = tmp_path / "workflow.db"
-    _mig_001.up(p)
+    _runner.run(str(p), str(tmp_path / "vibrium.db"))
     return p
 
 
