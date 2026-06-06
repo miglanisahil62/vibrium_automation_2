@@ -1,4 +1,4 @@
-"""Alert watcher. Reads ``state/workflow.db``; emits alerts on 6 conditions and
+"""Alert watcher. Reads ``state/workflow.db``; emits alerts on 7 conditions and
 — when ``WF_ALERTS_SEND=1`` (set in the server cron wrapper) — EMAILS them to
 the owner via ``_send_alert_email``. Without that env flag (tests/dev) it is
 payload-only, so the suite never sends.
@@ -7,10 +7,10 @@ SMTP from a deployed cron script is allowed under ``feedback_smtp_governance_blo
 (the guard only blocks ad-hoc Bash ``smtplib``); the ``WF_ALERTS_SEND`` gate is
 what keeps dev/test runs silent.
 
-The six conditions:
+The seven conditions:
 
-  A. DAEMON_DOWN     — Any daemon heartbeat in ``wf_agent_events`` is older
-                       than 30 min (or never seen).
+  A. DAEMON_DOWN     — A tracked every-few-min daemon's heartbeat is older than
+                       30 min (or never seen), checked only 09:00-19:00 IST.
   B. RUN_ERROR       — Any ``workflow_runs.status='ERROR'`` for >2h.
   C. RUN_WAITING     — Any ``workflow_runs.status='WAITING'`` for >7 days
                        (likely a stuck WAIT_UNTIL).
@@ -23,6 +23,8 @@ The six conditions:
                        cohort was prefetched but 0 enrolled, or enrolled but
                        0 real-fired, or nothing prefetched at all (P0). A
                        partial schema disarming the net emits a P1.
+  G. CAPACITY_SAT    — Late-window unfired PENDING backlog above threshold (P2)
+                       — the base outgrew the 750/hr cap; excess rolls forward.
 
 Cooldown: each condition has a 60-minute cooldown — same condition within
 that window is suppressed (counted as ``alerts_skipped_cooldown``). Cooldown
@@ -59,14 +61,29 @@ ALERT_EMAIL_FROM = "vibrium-workflow@stashfin.com"
 
 # Tracked daemons — must match the ``agent`` values written by Phase 9 daemons
 # to ``wf_agent_events``. Source of truth: PHASES.md Phase 9 deliverables.
+# Only TRUE every-few-minutes daemons belong here (30-min staleness = down).
+# NOT enrollment/prefetch: those are morning batch jobs (enrollment 07:35-12:00,
+# prefetch 07:32-09:00) that are LEGITIMATELY idle all afternoon — tracking them
+# here fired a chronic false A_DAEMON_DOWN P0 every afternoon. Their freshness is
+# covered correctly by detect_f_morning_health (which checks the OUTCOME — "0
+# enrolled" / "nothing prefetched" — not 30-min liveness).
 TRACKED_DAEMONS: tuple[str, ...] = (
     "workflow_executor",
     "workflow_scheduler",
     "workflow_ingest",
-    "workflow_enrollment",
 )
 
 DAEMON_DOWN_THRESHOLD_MIN = 30
+# detect_a only runs in the daemons' active window (IST). START=09:00 is
+# race-free (all tracked daemons have ticked many times by then, vs their
+# 07:00-08:00 cron starts); the 07:30-09:00 gap is a deliberate trade — a
+# morning daemon death there is backstopped by detect_f_morning_health
+# (fired==0 at 11:00 IST). END=19:00 anchors to the RBI CALL-WINDOW CLOSE: no
+# calls fire after 19:00, so daemon liveness past it is not actionable. Do NOT
+# widen END to "match the executor's later cron" — the scheduler stops gating at
+# 19:00 and its heartbeat would then read stale → a false evening 'down'.
+DAEMON_ACTIVE_START = 9
+DAEMON_ACTIVE_END = 19
 # detect_f morning-health thresholds (IST). Fetch+prefetch finish by ~08:30
 # (fetch 07:30, fallback 08:15, prefetch 07:32) and have NO later retry, so a
 # 0-prefetched day is terminal and checkable at 09:00. Enrollment/firing have
@@ -211,7 +228,16 @@ def _mark_fired(conn: sqlite3.Connection, condition: str, now: datetime) -> None
 
 def detect_a_daemon_down(conn: sqlite3.Connection, now: datetime) -> list[Alert]:
     """Any tracked daemon's most recent heartbeat is older than 30 min, OR
-    has never been seen at all."""
+    has never been seen at all.
+
+    Only checked during the daemons' ACTIVE window (DAEMON_ACTIVE_START..END IST).
+    The tracked daemons run *5 within the calling window and legitimately stop at
+    its close (scheduler ~19:00), so checking outside the window would fire a
+    chronic false 'down' P0 every evening/early-morning — the same flapping that
+    over-reports to the email watchdog and reds the external healthcheck. Outcome
+    failures outside the window are covered by detect_f_morning_health."""
+    if not (DAEMON_ACTIVE_START <= now.hour < DAEMON_ACTIVE_END):
+        return []
     cutoff = now - timedelta(minutes=DAEMON_DOWN_THRESHOLD_MIN)
     down: list[dict] = []
     for daemon in TRACKED_DAEMONS:
@@ -696,7 +722,7 @@ def _send_alert_email(payload: dict) -> bool:
 
 
 def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
-    """Read workflow.db; run all 6 detectors; de-dupe against cooldown;
+    """Read workflow.db; run all 7 detectors; de-dupe against cooldown;
     return stats.
 
     Args:

@@ -119,21 +119,25 @@ def _seed_fresh_heartbeats(db: Path, now: datetime) -> None:
 # 1. Condition A — daemon down
 
 
-def test_a_daemon_down_fires_when_heartbeat_stale(tmp_path: Path) -> None:
+def test_a_daemon_down_fires_when_heartbeat_stale(tmp_path: Path, monkeypatch) -> None:
     db = _make_db(tmp_path)
-    now = datetime.now(IST)
-    # Three fresh, one stale (45 min ago, > 30 min threshold).
+    # Pin 'now' to a fixed in-window time (12:00 IST) so the test is
+    # deterministic regardless of wall-clock — detect_a only runs 09:00-19:00.
+    now = datetime.now(IST).replace(hour=12, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(alerts, "_now_ist", lambda: now)
+    # All-but-last fresh, last one stale (45 min ago, > 30 min threshold).
+    # Index-agnostic so it survives changes to the TRACKED_DAEMONS tuple length.
     conn = sqlite3.connect(str(db))
     try:
-        for daemon in alerts.TRACKED_DAEMONS[:3]:
+        for daemon in alerts.TRACKED_DAEMONS[:-1]:
             conn.execute(
                 "INSERT INTO wf_agent_events(ts_ist, agent, status) VALUES (?, ?, 'ok')",
                 (_ist_str(now - timedelta(minutes=2)), daemon),
             )
-        # 4th daemon is stale.
+        # last daemon is stale.
         conn.execute(
             "INSERT INTO wf_agent_events(ts_ist, agent, status) VALUES (?, ?, 'ok')",
-            (_ist_str(now - timedelta(minutes=45)), alerts.TRACKED_DAEMONS[3]),
+            (_ist_str(now - timedelta(minutes=45)), alerts.TRACKED_DAEMONS[-1]),
         )
         conn.commit()
     finally:
@@ -144,7 +148,32 @@ def test_a_daemon_down_fires_when_heartbeat_stale(tmp_path: Path) -> None:
     assert "A_DAEMON_DOWN" in conditions
     a = next(a for a in stats["alerts"] if a["condition"] == "A_DAEMON_DOWN")
     assert a["severity"] == "P0"
-    assert alerts.TRACKED_DAEMONS[3] in a["subject"]
+    assert alerts.TRACKED_DAEMONS[-1] in a["subject"]
+
+
+def test_a_silent_outside_active_window(tmp_path: Path) -> None:
+    # Gate regression: a stale daemon OUTSIDE 09:00-19:00 IST must NOT fire
+    # (daemons legitimately idle then) — this is the evening/early-morning
+    # false-positive the window gate fixes.
+    db = _make_db(tmp_path)
+    now = datetime.now(IST).replace(hour=20, minute=0, second=0, microsecond=0)
+    conn = sqlite3.connect(str(db))
+    try:
+        for daemon in alerts.TRACKED_DAEMONS:  # all stale (2h old)
+            conn.execute(
+                "INSERT INTO wf_agent_events(ts_ist, agent, status) VALUES (?, ?, 'ok')",
+                (_ist_str(now - timedelta(hours=2)), daemon),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    assert alerts.detect_a_daemon_down(conn_ro(db), now) == []
+    assert alerts.detect_a_daemon_down(conn_ro(db),
+                                       now.replace(hour=8)) == []  # early-morning
+
+
+def conn_ro(db: Path):
+    return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 
 
 # 2. Condition B — run stuck in ERROR
