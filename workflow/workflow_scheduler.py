@@ -537,7 +537,16 @@ def run(
               -- terminal_status='AGENT_ALLOCATED_MANUAL') or cured.
               AND wr.status IN ('ACTIVE','WAITING')
             ORDER BY
-                -- 1) spillover: yesterday's un-fired rows clear first.
+                -- 0) LOWEST TIER LAST (one_time catch-all, blank-label). This is
+                --    the OUTERMOST key so EVERY non-low row (reserve + general)
+                --    outranks EVERY low row — regardless of spillover-day, risk,
+                --    or first-attempt. Placing it outermost (not mid-list) is what
+                --    prevents a yesterday-dated 'low' row from gaining spillover
+                --    priority and starving today's segmented first-attempts
+                --    (the spillover×low inversion). 'low' fires only on the
+                --    headroom left after all segmented/reserve demand is served.
+                CASE WHEN pa.priority_class = 'low' THEN 1 ELSE 0 END,
+                -- 1) spillover: yesterday's un-fired rows clear first (within tier).
                 CASE WHEN substr(pa.scheduled_at_ist, 1, 10) < ? THEN 0 ELSE 1 END,
                 -- 1b) WS7/2c RESERVED BANDWIDTH: callback / unfulfilled-PTP-Agree
                 --     follow-ups (priority_class='reserve') jump the queue ahead of

@@ -102,8 +102,13 @@ def execute(
     # branches; 'general' otherwise). The scheduler ranks reserve rows first so a
     # committed promise jumps the queue ahead of general first-attempts. Default
     # 'general' so any unstamped run is treated as a normal fire.
+    # 'low' (one_time catch-all, blank-label) fires only on spare capacity — it
+    # MUST be in the allow-list or it silently coerces to 'general' and competes
+    # head-to-head with segmented first-attempts (FM-1). Ordered set:
+    # reserve (0) < general (1) < low (2). Any unknown value still degrades to
+    # 'general' (safe — never accidentally 'low'/deprioritised).
     priority_class = str(run.scratchpad.get("priority_class") or "general")
-    if priority_class not in ("reserve", "general"):
+    if priority_class not in ("reserve", "general", "low"):
         priority_class = "general"
 
     # scheduled_at_ist = now: the workflow_scheduler picks up PENDING rows

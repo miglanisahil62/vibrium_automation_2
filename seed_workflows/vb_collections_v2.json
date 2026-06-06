@@ -2240,8 +2240,8 @@
       },
       "edges": {
         "true": "00000000-0000-4000-a000-000000000028",
-        "false": "00000000-0000-4000-a000-000000000006",
-        "error": "00000000-0000-4000-a000-000000000006"
+        "false": "00000000-0000-4000-a000-000000000019",
+        "error": "00000000-0000-4000-a000-000000000019"
       }
     },
     {
@@ -2501,6 +2501,144 @@
       "label": "high_nowa: Terminate \u2014 Gate Suppressed",
       "config": {
         "status": "GATE_SUPPRESSED"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000019",
+      "type": "CONDITION",
+      "label": "Classify: one_time_catchall?",
+      "config": {
+        "expr": "True"
+      },
+      "edges": {
+        "true": "00000000-0000-4000-a000-000000000029",
+        "false": "00000000-0000-4000-a000-000000000006",
+        "error": "00000000-0000-4000-a000-000000000006"
+      }
+    },
+    {
+      "node_id": "00000000-0000-4000-a000-000000000029",
+      "type": "WAIT_UNTIL",
+      "label": "one_time_catchall \u2014 Entry Wait (best-hour, T+0)",
+      "config": {
+        "rotate_day_offset": 0,
+        "rotate_hours_key": "best_hours",
+        "rotate_index_key": "day_index",
+        "reset_keys": {
+          "priority_class": "low"
+        }
+      },
+      "edges": {
+        "next": "a9000000-0000-4000-a000-000000000001",
+        "error": "00000000-0000-4000-a000-000000000007"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000001",
+      "type": "FIRE_VB_CALL",
+      "label": "one_time_catchall: Fire VB Call (one-time)",
+      "config": {},
+      "edges": {
+        "queued": "a9000000-0000-4000-a000-000000000002",
+        "suppressed": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000002",
+      "type": "AWAIT_DISPOSITION",
+      "label": "one_time_catchall: Await Disposition",
+      "config": {
+        "timeout_hours": 1
+      },
+      "edges": {
+        "disposition": "a9000000-0000-4000-a000-000000000003",
+        "timeout": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000003",
+      "type": "BRANCH_ON_DISPOSITION",
+      "label": "one_time_catchall: Branch on Disposition",
+      "config": {
+        "cases": {
+          "NOOP": "paid",
+          "PTP_CALL": "ptp",
+          "AGREE_EOD_CALL": "eod",
+          "CALLBACK_CALL": "callback"
+        },
+        "default": "no_outcome"
+      },
+      "edges": {
+        "paid": "a9000000-0000-4000-a000-000000000004",
+        "ptp": "a9000000-0000-4000-a000-000000000005",
+        "eod": "a9000000-0000-4000-a000-000000000006",
+        "callback": "a9000000-0000-4000-a000-000000000007",
+        "no_outcome": "a9000000-0000-4000-a000-000000000014",
+        "default": "a9000000-0000-4000-a000-000000000014",
+        "error": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000004",
+      "type": "TERMINATE",
+      "label": "one_time_catchall: Terminate \u2014 Paid",
+      "config": {
+        "status": "PAID"
+      },
+      "edges": {}
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000005",
+      "type": "WAIT_UNTIL",
+      "label": "one_time_catchall: Wait \u2014 PTP date",
+      "config": {
+        "relative": "T+3 day at 08:00",
+        "reset_keys": {
+          "priority_class": "reserve"
+        }
+      },
+      "edges": {
+        "next": "a9000000-0000-4000-a000-000000000001",
+        "error": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000006",
+      "type": "WAIT_UNTIL",
+      "label": "one_time_catchall: Wait \u2014 EOD call",
+      "config": {
+        "relative": "T+0 day at 18:00",
+        "reset_keys": {
+          "priority_class": "reserve"
+        }
+      },
+      "edges": {
+        "next": "a9000000-0000-4000-a000-000000000001",
+        "error": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000007",
+      "type": "WAIT_UNTIL",
+      "label": "one_time_catchall: Wait \u2014 Callback",
+      "config": {
+        "relative": "T+1 day at 08:00",
+        "reset_keys": {
+          "priority_class": "reserve"
+        }
+      },
+      "edges": {
+        "next": "a9000000-0000-4000-a000-000000000001",
+        "error": "a9000000-0000-4000-a000-000000000014"
+      }
+    },
+    {
+      "node_id": "a9000000-0000-4000-a000-000000000014",
+      "type": "TERMINATE",
+      "label": "one_time_catchall: Terminate \u2014 one-time, no outcome",
+      "config": {
+        "status": "ONE_TIME_NO_OUTCOME"
       },
       "edges": {}
     }

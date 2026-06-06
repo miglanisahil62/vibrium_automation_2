@@ -84,6 +84,9 @@ def _load_segment_meta() -> list[dict]:
         meta.append({
             "name":        seg["name"],
             "bot_calling": m.group(1) if m else None,
+            # match='True' catch-all (one_time): blank bot_calling like high_nowa,
+            # so flag it explicitly or _classify_segment can't tell them apart.
+            "catchall":    seg.get("match", "").strip() == "True",
             "calls":       seg["total_calls"],
             "entry":       f"T+{seg['entry_offset_days']}",
         })
@@ -131,6 +134,10 @@ def _classify_segment(bot_calling: "str | None",
                        wa_status: "str | None") -> str:
     """Apply the same first-match-wins logic as the graph classifier."""
     for seg in SEGMENT_META:
+        if seg.get("catchall"):
+            # match='True' — the final fall-through. Anything reaching here
+            # (blank/unrecognised coll_bot_calling, not high_nowa) is one_time.
+            return seg["name"]
         if seg["bot_calling"] is not None:
             if bot_calling == seg["bot_calling"]:
                 return seg["name"]
@@ -180,6 +187,11 @@ def _build_funnel(rows: list[dict],
         "INELIGIBLE":   0,
         "OUT_OF_SCOPE": 0,
         "ENTRY_WAIT_ERROR": 0,
+        # one-time catch-all (blank-label) that got its single call + no positive
+        # outcome → a distinct, EXPECTED, large terminal. Must be counted as an
+        # exit, NOT fall through to _classify_segment (which would inflate the
+        # segment funnel with terminated no-outcome runs and break the MIS).
+        "ONE_TIME_NO_OUTCOME": 0,
     }
     for r in rows:
         ts = r.get("terminal_status") or ""

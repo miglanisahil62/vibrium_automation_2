@@ -169,6 +169,19 @@ SEGMENTS: list[dict] = [
         "entry_offset_days": 0,
         "entry_time": "08:00",
     },
+    {
+        # One-time CATCH-ALL (blank coll_bot_calling, not caught above). Permanent
+        # low-priority policy: ONE opportunistic call on SPARE capacity only;
+        # positive disposition (PTP/Agree/Callback) → normal follow-up, everything
+        # else → terminate (no retry, no agent). match='True' = matches everyone
+        # remaining, so it REPLACES OUT_OF_SCOPE as the fall-through. MUST be last.
+        "name": "one_time_catchall",
+        "match": "True",
+        "total_calls": 1,
+        "entry_offset_days": 0,
+        "entry_time": "08:00",
+        "one_time": True,          # → _call_loop(assign_non_positive=False) + entry-wait priority_class='low'
+    },
 ]
 
 # Root-node index map (single-byte). Classification + entry-wait nodes are
@@ -184,8 +197,16 @@ _CLASSIFY_BASE       = 0x10   # classify_i at 0x10 + i
 _ENTRY_WAIT_BASE     = 0x20   # enter_wait_i at 0x20 + i
 
 
-def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dict]:
+def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int,
+               assign_non_positive: bool = True) -> list[dict]:
     """Build the call-loop nodes for one segment.
+
+    assign_non_positive=False → ONE-TIME catch-all shape (blank-label, spare
+    capacity): exactly one call; positive dispositions (PTP/Agree/Callback) get
+    the normal follow-up; EVERYTHING else (no-connect, RTP, dispute, escalate,
+    AWAIT timeout, default) → TERMINATE 'ONE_TIME_NO_OUTCOME', never an agent,
+    never a same-day retry. Returns a minimal subgraph (no COUNTER / SAME_DAY_GATE
+    / WAIT_RETRY / WAIT_SAMEDAY / ASSIGN_* nodes).
 
     total_calls = max VB call attempts on the RETRY path (== COUNTER limit).
         total_calls == 1  → no COUNTER; first RETRY routes straight to
@@ -234,8 +255,49 @@ def _call_loop(prefix_fmt: str, label_prefix: str, total_calls: int) -> list[dic
     # WS3 same-day-retry nodes.
     SAME_DAY_GATE   = n(0x12)   # no-connect → retry today vs roll to next day
     WAIT_SAMEDAY    = n(0x13)   # ≥1h same-day gap before the next attempt
+    TERM_NO_OUTCOME = n(0x14)   # one_time: non-positive disposition → terminate (never agent)
 
     p = label_prefix
+
+    # ─── ONE-TIME catch-all shape ──────────────────────────────────────────
+    # FIRE → AWAIT → BRANCH → {paid→TERM_PAID, ptp/eod/callback→WAIT_*→FIRE,
+    # everything-else (incl. AWAIT timeout, suppressed, escalate, retry, rtp,
+    # default, error) → TERM_NO_OUTCOME}. No retry, no agent, no COUNTER.
+    if not assign_non_positive:
+        return [
+            {"node_id": FIRE, "type": "FIRE_VB_CALL",
+             "label": f"{p}: Fire VB Call (one-time)", "config": {},
+             "edges": {"queued": AWAIT, "suppressed": TERM_NO_OUTCOME}},
+            {"node_id": AWAIT, "type": "AWAIT_DISPOSITION",
+             "label": f"{p}: Await Disposition", "config": {"timeout_hours": 1},
+             # one_time: a timeout means we gave the one call and got nothing —
+             # terminate, do NOT re-park/retry (FM-6).
+             "edges": {"disposition": BRANCH, "timeout": TERM_NO_OUTCOME}},
+            {"node_id": BRANCH, "type": "BRANCH_ON_DISPOSITION",
+             "label": f"{p}: Branch on Disposition",
+             "config": {"cases": {"NOOP": "paid", "PTP_CALL": "ptp",
+                                  "AGREE_EOD_CALL": "eod", "CALLBACK_CALL": "callback"},
+                        "default": "no_outcome"},
+             "edges": {"paid": TERM_PAID, "ptp": WAIT_PTP, "eod": WAIT_EOD,
+                       "callback": WAIT_CB, "no_outcome": TERM_NO_OUTCOME,
+                       "default": TERM_NO_OUTCOME, "error": TERM_NO_OUTCOME}},
+            {"node_id": TERM_PAID, "type": "TERMINATE",
+             "label": f"{p}: Terminate — Paid", "config": {"status": "PAID"}, "edges": {}},
+            {"node_id": WAIT_PTP, "type": "WAIT_UNTIL", "label": f"{p}: Wait — PTP date",
+             # a promise promotes the follow-up to 'reserve' (same as segmented).
+             "config": {"relative": "T+3 day at 08:00", "reset_keys": {"priority_class": "reserve"}},
+             "edges": {"next": FIRE, "error": TERM_NO_OUTCOME}},
+            {"node_id": WAIT_EOD, "type": "WAIT_UNTIL", "label": f"{p}: Wait — EOD call",
+             "config": {"relative": "T+0 day at 18:00", "reset_keys": {"priority_class": "reserve"}},
+             "edges": {"next": FIRE, "error": TERM_NO_OUTCOME}},
+            {"node_id": WAIT_CB, "type": "WAIT_UNTIL", "label": f"{p}: Wait — Callback",
+             "config": {"relative": "T+1 day at 08:00", "reset_keys": {"priority_class": "reserve"}},
+             "edges": {"next": FIRE, "error": TERM_NO_OUTCOME}},
+            {"node_id": TERM_NO_OUTCOME, "type": "TERMINATE",
+             "label": f"{p}: Terminate — one-time, no outcome",
+             "config": {"status": "ONE_TIME_NO_OUTCOME"}, "edges": {}},
+        ]
+
     use_counter = total_calls >= 2
     # The DAY-rollover target (next call-day): COUNTER(day_index) for multi-day
     # segments, else straight to ASSIGN_LIMIT (a 1-day segment that exhausts its
@@ -576,21 +638,30 @@ def build_graph() -> dict:
         # COUNTER bumps it on each RETRY), so it doubles as the rotation index —
         # no new key needed. best_hours is seeded at enrollment (population
         # default [10,13,16] if a customer has no history).
+        is_one_time = bool(seg.get("one_time", False))
+        entry_cfg = {
+            "rotate_day_offset": offset,
+            "rotate_hours_key": "best_hours",
+            "rotate_index_key": "day_index",
+        }
+        if is_one_time:
+            # Stamp priority_class='low' BEFORE the first FIRE so the scheduler
+            # tiers this customer lowest (spare-capacity only). wait_until copies
+            # reset_keys verbatim into the scratchpad; fire_vb_call's allow-list
+            # now permits 'low'. Per-segment (only the catch-all), never global.
+            entry_cfg["reset_keys"] = {"priority_class": "low"}
         nodes.append({
             "node_id": entry_wait_id,
             "type": "WAIT_UNTIL",
             "label": f"{seg['name']} — Entry Wait (best-hour, T+{offset})",
-            "config": {
-                "rotate_day_offset": offset,
-                "rotate_hours_key": "best_hours",
-                "rotate_index_key": "day_index",
-            },
+            "config": entry_cfg,
             "edges": {
                 "next":  seg_fire,
                 "error": r(_IDX_TERM_WAIT_ERR),
             },
         })
-        nodes += _call_loop(seg_prefix, seg["name"], int(seg["total_calls"]))
+        nodes += _call_loop(seg_prefix, seg["name"], int(seg["total_calls"]),
+                            assign_non_positive=not is_one_time)
 
     return {"nodes": nodes}
 
