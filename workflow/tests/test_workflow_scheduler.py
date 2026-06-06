@@ -270,6 +270,37 @@ def test_happy_path_five_rows_all_fire(dbs):
         )
 
 
+# ----------------------------------------- 1b. terminated run never fires (gate)
+
+
+def test_terminated_run_does_not_fire(dbs):
+    # Contact-safety invariant: a fire whose run is TERMINATED (e.g. DONE /
+    # terminal_status=AGENT_ALLOCATED_MANUAL after handoff to a human agent) must
+    # NEVER fire, even though its action row is still PENDING (self_cure /
+    # reset_pending_errors can re-animate ERROR/FIRING rows to PENDING with no
+    # run filter). The scheduler's `wr.status IN ('ACTIVE','WAITING')` gate is the
+    # durable backstop. Checked across all terminal/paused states (unique ids).
+    wf, vb = dbs
+    for i, term_status in enumerate(("DONE", "PAUSED", "ERROR", "ORPHANED")):
+        rid, cid = 9000 + i * 10, 99000 + i * 10
+        _insert_pending(wf, n=1, run_id_start=rid, customer_id_start=cid)
+        conn = sqlite3.connect(str(wf))
+        try:
+            conn.execute("UPDATE workflow_runs SET status=? WHERE id=?",
+                         (term_status, rid))
+            conn.commit()
+        finally:
+            conn.close()
+        trigger = _ok_trigger()
+        stats = wfs.run(
+            workflow_db_path=wf, vibrium_db_path=vb,
+            trigger_fn=trigger, gate_check_fn=_ok_gate(),
+            is_callable_now_fn=_ok_window(), record_fire_fn=MagicMock(),
+        )
+        assert stats["fired"] == 0, f"{term_status} run must not fire"
+        assert trigger.call_count == 0, f"{term_status}: CT trigger must not be called"
+
+
 # --------------------------------------------------------------- 2. gate fails
 
 

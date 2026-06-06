@@ -412,6 +412,37 @@ def _extract_enroll_config(graph: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
+_BOT_EXCLUSION_FILE = os.environ.get(
+    "WF_BOT_EXCLUSION_FILE",
+    str(Path(__file__).resolve().parent.parent / "state" / "bot_exclusion_ids.csv"),
+)
+
+
+def _load_bot_exclusion_ids() -> set[str]:
+    """Customer_ids permanently excluded from bot enrolment — cases handed to
+    HUMAN agents that must never be bot-called again (double-contact). One id
+    per line; a 'customer_id'/'customer id' header is tolerated. Missing file =
+    no exclusions (empty set). Best-effort: a read error never blocks enrolment."""
+    path = _BOT_EXCLUSION_FILE
+    if not os.path.exists(path):
+        return set()
+    try:
+        ids: set[str] = set()
+        with open(path) as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.lower() in ("customer_id", "customer id"):
+                    continue
+                if s.endswith(".0"):  # float-stored export → match clean ids
+                    s = s[:-2]
+                ids.add(s)
+        return ids
+    except OSError as exc:
+        log.warning("bot-exclusion file unreadable (%s): %s — no exclusions applied",
+                    path, exc)
+        return set()
+
+
 def _load_candidates(source_csv: PathLike) -> list[str]:
     """Read candidate customer_ids from a CSV.
 
@@ -842,6 +873,15 @@ def _run_locked(
         except (FileNotFoundError, ValueError) as exc:
             log.error("workflow id=%s candidate load failed: %s", wf.id, exc)
             continue
+        # Permanent bot-exclusion: customers handed to human agents must never
+        # re-enrol (double-contact). Drop them from candidates BEFORE matching.
+        excluded = _load_bot_exclusion_ids()
+        if excluded:
+            before = len(cids)
+            cids = [c for c in cids if c not in excluded]
+            if before - len(cids):
+                log.info("workflow id=%s: excluded %d agent-allocated candidate(s) "
+                         "from enrolment (bot-exclusion list)", wf.id, before - len(cids))
         wf_stats["candidates"] = len(cids)
         stats.candidates_total += len(cids)
 

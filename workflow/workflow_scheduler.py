@@ -528,6 +528,14 @@ def run(
             JOIN workflows w ON w.id = wr.workflow_id
             WHERE pa.status='PENDING'
               AND pa.scheduled_at_ist <= ?
+              -- Durable contact-safety invariant: NEVER fire an action whose
+              -- run is terminated/paused. A FIRE is only legitimate while the
+              -- run is ACTIVE (just queued) or WAITING (parked at AWAIT). This
+              -- stops a re-animated action (self_cure flips ERROR/FIRING back to
+              -- PENDING with no run filter) from calling a customer whose run was
+              -- terminated — e.g. one handed to a human agent (DONE
+              -- terminal_status='AGENT_ALLOCATED_MANUAL') or cured.
+              AND wr.status IN ('ACTIVE','WAITING')
             ORDER BY
                 -- 1) spillover: yesterday's un-fired rows clear first.
                 CASE WHEN substr(pa.scheduled_at_ist, 1, 10) < ? THEN 0 ELSE 1 END,
