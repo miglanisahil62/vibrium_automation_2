@@ -47,6 +47,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _MIN_COVERAGE = float(os.environ.get("CT_PREFETCH_MIN_COVERAGE", "0.80"))
 _ERROR_RETRY_CAP = int(os.environ.get("CT_PREFETCH_ERROR_RETRY_CAP", "3"))
 _PREFETCH_CONCURRENCY = int(os.environ.get("CT_FETCH_MAX_CONCURRENCY", "8"))
+# Persist the cache every _PREFETCH_BATCH ids so a timeout/crash mid-run keeps
+# completed work. A full 1-30 cohort (~16k) under CT throttling can exceed the
+# cron timeout; an all-at-end upsert would lose the entire run on a kill.
+_PREFETCH_BATCH = max(1, int(os.environ.get("CT_PREFETCH_BATCH", "1500")))
 
 
 def _today_ist() -> str:
@@ -239,10 +243,20 @@ def prefetch(
 
     fetched: dict[str, tuple[str, dict[str, Any] | None]] = {}
     if to_fetch:
-        log.info("prefetch %s: fetching %d/%d (already=%d)",
-                 cohort_date, len(to_fetch), requested, already_terminal)
-        fetched = ctp.bulk_fetch_status(to_fetch, concurrency=_PREFETCH_CONCURRENCY)
-        _upsert(workflow_db_path, cohort_date, fetched)
+        log.info("prefetch %s: fetching %d/%d (already=%d) in batches of %d",
+                 cohort_date, len(to_fetch), requested, already_terminal,
+                 _PREFETCH_BATCH)
+        # Persist INCREMENTALLY per batch: the full-cohort fetch can exceed the
+        # cron timeout under CT throttling, and an all-at-end upsert would lose
+        # the entire run on a kill. Batching also lets enrollment start on a
+        # partially-warm cache (live fallback covers the rest).
+        for i in range(0, len(to_fetch), _PREFETCH_BATCH):
+            batch = to_fetch[i:i + _PREFETCH_BATCH]
+            got = ctp.bulk_fetch_status(batch, concurrency=_PREFETCH_CONCURRENCY)
+            _upsert(workflow_db_path, cohort_date, got)
+            fetched.update(got)
+            log.info("prefetch %s: persisted batch %d-%d (%d cached this run)",
+                     cohort_date, i, i + len(batch), len(fetched))
 
     # Recompute coverage over the full requested set.
     conn = get_workflow_db(workflow_db_path)
