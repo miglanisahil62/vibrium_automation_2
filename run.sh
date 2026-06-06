@@ -86,6 +86,12 @@ case "${MODE}" in
         export WF_PER_WORKFLOW_HARD_ABORT="${WF_PER_WORKFLOW_HARD_ABORT:-60000}"
         export WF_MAX_ENROLL_PER_TICK="${WF_MAX_ENROLL_PER_TICK:-20000}" ;;
     alerts)
+        # Deliver alerts by email from the deployed cron (the watchdog is
+        # useless if failures never reach the owner). Overridable to 0 for a
+        # silent dry-run; tests invoke workflow.alerts directly (no wrapper) so
+        # they stay payload-only. smtplib in a deployed cron is governance-OK.
+        export WF_ALERTS_SEND="${WF_ALERTS_SEND:-1}"
+        export WF_GMAIL_CONFIG="${WF_GMAIL_CONFIG:-/home/ubuntu/loan_closure/config_gmail.json}"
         TIMEOUT_SEC=300 ;;
     digest)
         TIMEOUT_SEC=600 ;;

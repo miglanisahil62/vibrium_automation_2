@@ -1,11 +1,14 @@
-"""Phase 8.5 alert watcher tests.
+"""Alert watcher tests.
 
-Each of the 5 conditions is simulated by inserting fixture rows into a fresh
-tmp_path SQLite DB. We assert (a) the right alert fires, (b) the cooldown
+Each of the 6 conditions (A–F) is simulated by inserting fixture rows into a
+fresh tmp_path SQLite DB. We assert (a) the right alert fires, (b) the cooldown
 suppresses a second fire within 60 min, (c) dry_run leaves alert_state
-untouched, and (d) email-payload shape is well-formed.
+untouched, (d) email-payload shape is well-formed, (e) detect_f morning-health
+fires/stays-silent across the funnel + check-hour cases, and (f)
+_send_alert_email is gate-respecting and crash-safe.
 
-We never call SMTP — Phase 8.5 is payload-only.
+SMTP is exercised only through _send_alert_email with WF_ALERTS_SEND unset (or a
+missing config) — no real email is ever sent by the suite.
 """
 from __future__ import annotations
 
@@ -52,7 +55,8 @@ def _make_db(tmp_path: Path) -> Path:
                 customer_id TEXT NOT NULL,
                 current_node_id TEXT,
                 status TEXT NOT NULL,
-                updated_at_ist TEXT
+                updated_at_ist TEXT,
+                enrolled_at_ist TEXT
             );
             CREATE TABLE wf_kill_switch (
                 id INTEGER PRIMARY KEY,
@@ -61,8 +65,35 @@ def _make_db(tmp_path: Path) -> Path:
                 reason TEXT,
                 set_by TEXT
             );
+            CREATE TABLE ct_profile_cache (
+                customer_id TEXT NOT NULL,
+                cohort_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                PRIMARY KEY (customer_id, cohort_date)
+            );
+            CREATE TABLE wf_pending_actions (
+                id INTEGER PRIMARY KEY,
+                customer_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                fired_at_ist TEXT
+            );
             """
         )
+        # Seed a HEALTHY morning funnel (prefetched>0, enrolled>0, real-fired>0)
+        # so detect_f_morning_health stays silent by default — the A–E tests
+        # don't want the morning-health net firing on top of their assertions.
+        # The detect_f tests below override this with unhealthy states.
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO ct_profile_cache(customer_id, cohort_date, status) "
+            "VALUES ('seed-cust', ?, 'found')", (today,))
+        conn.execute(
+            "INSERT INTO workflow_runs(workflow_id, customer_id, status, enrolled_at_ist) "
+            "VALUES (1, 'seed-cust', 'ACTIVE', ?)", (ts,))
+        conn.execute(
+            "INSERT INTO wf_pending_actions(customer_id, status, fired_at_ist) "
+            "VALUES ('seed-cust', 'FIRED', ?)", (ts,))
         conn.commit()
     finally:
         conn.close()
@@ -358,3 +389,128 @@ def test_empty_db_emits_nothing(tmp_path: Path) -> None:
     assert stats["alerts_emitted"] == 0
     assert stats["alerts_skipped_cooldown"] == 0
     assert stats["alerts"] == []
+
+
+# ---------------------------------------------------------------- detect_f (morning health)
+# Called directly with a controlled `now` so they're deterministic regardless of
+# the wall-clock hour the suite runs at.
+
+
+def _set_funnel(db: Path, *, prefetched=0, enrolled=0, fired=0, shadow_fired=0,
+                today: str | None = None) -> None:
+    """Reset the morning-funnel tables to exact counts for the cohort day."""
+    today = today or datetime.now(IST).strftime("%Y-%m-%d")
+    ts = f"{today} 10:00:00"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DELETE FROM ct_profile_cache")
+        conn.execute("DELETE FROM workflow_runs")
+        conn.execute("DELETE FROM wf_pending_actions")
+        for i in range(prefetched):
+            conn.execute("INSERT INTO ct_profile_cache(customer_id,cohort_date,status) "
+                         "VALUES (?,?,'found')", (f"c{i}", today))
+        for i in range(enrolled):
+            conn.execute("INSERT INTO workflow_runs(workflow_id,customer_id,status,enrolled_at_ist) "
+                         "VALUES (1,?,'ACTIVE',?)", (f"c{i}", ts))
+        for i in range(fired):
+            conn.execute("INSERT INTO wf_pending_actions(customer_id,status,fired_at_ist) "
+                         "VALUES (?,'FIRED',?)", (f"c{i}", ts))
+        for i in range(shadow_fired):
+            conn.execute("INSERT INTO wf_pending_actions(customer_id,status,fired_at_ist) "
+                         "VALUES (?,'SHADOW_FIRED',?)", (f"s{i}", ts))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_detect_f(db: Path, now: datetime) -> list:
+    conn = sqlite3.connect(str(db))
+    try:
+        return alerts.detect_f_morning_health(conn, now)
+    finally:
+        conn.close()
+
+
+def _today_at(hour: int) -> datetime:
+    return datetime.now(IST).replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
+def test_f_prefetch_zero_fires_p0_at_9(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=0, enrolled=0, fired=0)
+    out = _run_detect_f(db, _today_at(9))
+    assert any(a.condition == "F_MORNING_HEALTH" and a.severity == "P0" for a in out)
+
+
+def test_f_enrolled_zero_fires_after_11(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=100, enrolled=0, fired=0)
+    out = _run_detect_f(db, _today_at(11))
+    assert any(a.condition == "F_MORNING_HEALTH" for a in out)
+
+
+def test_f_enrolled_zero_silent_before_11(tmp_path: Path) -> None:
+    # 09:00–10:59 the enrollment catch-ups (08:30/10:00) may still be landing.
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=100, enrolled=0, fired=0)
+    assert _run_detect_f(db, _today_at(10)) == []
+
+
+def test_f_shadow_fired_not_counted_as_fired(tmp_path: Path) -> None:
+    # P1-1 regression: SHADOW_FIRED stamps fired_at_ist but is NOT a real call.
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=100, enrolled=100, fired=0, shadow_fired=50)
+    out = _run_detect_f(db, _today_at(12))
+    assert any(a.condition == "F_MORNING_HEALTH" for a in out), \
+        "0 REAL fires (50 shadow) must still trip the net"
+
+
+def test_f_healthy_funnel_silent(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=100, enrolled=98, fired=40)
+    assert _run_detect_f(db, _today_at(12)) == []
+
+
+def test_f_dormant_before_9(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_funnel(db, prefetched=0, enrolled=0, fired=0)
+    assert _run_detect_f(db, _today_at(8)) == []
+
+
+def test_f_partial_schema_emits_p1(tmp_path: Path) -> None:
+    # Funnel tables dropped while the rest of the schema exists → net disarmed
+    # → must be LOUD (P1), not silently skipped (P1-2).
+    db = _make_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DROP TABLE ct_profile_cache")
+        conn.execute("DROP TABLE wf_pending_actions")
+        conn.commit()
+    finally:
+        conn.close()
+    out = _run_detect_f(db, _today_at(11))
+    assert any(a.condition == "F_MORNING_SCHEMA" and a.severity == "P1" for a in out)
+
+
+def test_f_bare_db_skips(tmp_path: Path) -> None:
+    db = tmp_path / "bare.db"
+    sqlite3.connect(str(db)).close()
+    assert _run_detect_f(db, _today_at(11)) == []
+
+
+# ---------------------------------------------------------------- _send_alert_email
+
+
+def test_send_alert_email_gate_off_returns_false(monkeypatch) -> None:
+    # WF_ALERTS_SEND unset → no-op, never touches SMTP.
+    monkeypatch.delenv("WF_ALERTS_SEND", raising=False)
+    assert alerts._send_alert_email(
+        {"to": "x@y.com", "subject": "s", "body": "b"}) is False
+
+
+def test_send_alert_email_missing_config_no_raise(monkeypatch) -> None:
+    # Gate on but config file missing → caught, returns False, never raises.
+    monkeypatch.setenv("WF_ALERTS_SEND", "1")
+    monkeypatch.setattr(alerts, "_GMAIL_CONFIG", "/nonexistent/cfg.json")
+    assert alerts._send_alert_email(
+        {"to": "x@y.com", "subject": "s", "body": "b"}) is False

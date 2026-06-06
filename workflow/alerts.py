@@ -1,12 +1,13 @@
-"""Phase 8.5 alert watcher. Reads ``state/workflow.db``; emits alerts on
-5 conditions. NEVER sends real email — payload generation only.
+"""Alert watcher. Reads ``state/workflow.db``; emits alerts on 6 conditions and
+— when ``WF_ALERTS_SEND=1`` (set in the server cron wrapper) — EMAILS them to
+the owner via ``_send_alert_email``. Without that env flag (tests/dev) it is
+payload-only, so the suite never sends.
 
-Real SMTP send is intentionally gated behind a config flag + Sahil approval
-per ``feedback_smtp_governance_block`` (the bare word ``smtplib`` in any
-bash/script context is hard-blocked by guard.py without explicit
-``I AUTHORIZE THIS SEND`` from the operator).
+SMTP from a deployed cron script is allowed under ``feedback_smtp_governance_block``
+(the guard only blocks ad-hoc Bash ``smtplib``); the ``WF_ALERTS_SEND`` gate is
+what keeps dev/test runs silent.
 
-The five conditions:
+The six conditions:
 
   A. DAEMON_DOWN     — Any daemon heartbeat in ``wf_agent_events`` is older
                        than 30 min (or never seen).
@@ -18,6 +19,10 @@ The five conditions:
   E. QUEUE_BUILDUP   — Any single tick in the last hour processed more than
                        ``TICK_BATCH_LIMIT * 0.9`` rows (signal that the
                        executor / scheduler can't keep up).
+  F. MORNING_HEALTH  — Unattended-ops net: after the morning window, today's
+                       cohort was prefetched but 0 enrolled, or enrolled but
+                       0 real-fired, or nothing prefetched at all (P0). A
+                       partial schema disarming the net emits a P1.
 
 Cooldown: each condition has a 60-minute cooldown — same condition within
 that window is suppressed (counted as ``alerts_skipped_cooldown``). Cooldown
@@ -32,9 +37,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import smtplib
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
@@ -59,6 +67,14 @@ TRACKED_DAEMONS: tuple[str, ...] = (
 )
 
 DAEMON_DOWN_THRESHOLD_MIN = 30
+# detect_f morning-health thresholds (IST). Fetch+prefetch finish by ~08:30
+# (fetch 07:30, fallback 08:15, prefetch 07:32) and have NO later retry, so a
+# 0-prefetched day is terminal and checkable at 09:00. Enrollment/firing have
+# scheduled catch-ups (enrollment 08:30/10:00/12:00, scheduler */5 from 08:00),
+# so enrolled==0 / fired==0 must NOT alert until those have had time to land —
+# checked at 11:00 to avoid crying wolf before the pipeline's own retries run.
+MORNING_FETCH_CHECK_HOUR = 9
+MORNING_PIPELINE_CHECK_HOUR = 11
 RUN_ERROR_THRESHOLD_HOURS = 2
 RUN_WAITING_THRESHOLD_DAYS = 7
 KILL_SWITCH_THRESHOLD_HOURS = 1
@@ -75,14 +91,12 @@ QUEUE_BUILDUP_LOOKBACK_MIN = 60
 @dataclass
 class Alert:
     """Single alert payload. ``details`` is structured data for the cooldown
-    lookup and for downstream consumers (e.g., a future SMTP/Slack send).
-
-    We intentionally do NOT include any ``send()`` method here — the goal of
-    Phase 8.5 is to produce the payload, log it, and stop. Real SMTP is
-    governance-gated and lives in a separate (post-approval) module.
+    lookup and for the email body/subject. The payload is delivered by the
+    module-level ``_send_alert_email`` (gated by ``WF_ALERTS_SEND``); the
+    dataclass itself stays send-free so it remains trivially testable.
     """
 
-    condition: str  # "A_DAEMON_DOWN" | "B_RUN_ERROR" | "C_RUN_WAITING" | "D_KILL_SWITCH" | "E_QUEUE_BUILDUP"
+    condition: str  # A_DAEMON_DOWN|B_RUN_ERROR|C_RUN_WAITING|D_KILL_SWITCH|E_QUEUE_BUILDUP|F_MORNING_HEALTH|F_MORNING_SCHEMA
     severity: str  # "P0" | "P1" | "P2"
     subject: str
     body: str
@@ -90,7 +104,7 @@ class Alert:
 
     def as_email_payload(self) -> dict:
         """Shape: ``{to, from, subject, body, severity, condition, details}``.
-        Consumed by tests + any future SMTP module."""
+        Consumed by tests + ``_send_alert_email``."""
         return {
             "to": ALERT_EMAIL_TO,
             "from": ALERT_EMAIL_FROM,
@@ -452,20 +466,149 @@ def detect_e_queue_buildup(conn: sqlite3.Connection, now: datetime) -> list[Aler
     ]
 
 
+def detect_f_morning_health(conn: sqlite3.Connection, now: datetime) -> list[Alert]:
+    """WS12 — the unattended-ops safety net. After the morning window, catch a
+    silently-broken morning: a cohort was prefetched but 0 enrolled, OR enrolled
+    but 0 fired, OR nothing prefetched at all. These are LOGICAL failures the jobs
+    exit 0 on (so no DAEMON_DOWN / no 'down' heartbeat) — without this detector
+    they are invisible until someone reads the funnel email. P0 because it means
+    today's collections calls are NOT going out and the owner must intervene.
+
+    Before the check hours the morning is still in progress → no alert. A bare
+    DB (no workflow schema yet) is skipped, but a PARTIAL schema (the net's
+    tables missing while the rest exist) emits a distinct P1 rather than
+    silently disarming the watchdog."""
+    if now.hour < MORNING_FETCH_CHECK_HOUR:
+        return []
+
+    # Schema guard: a fresh/empty DB → skip (no false alarm). But if the DB has
+    # workflow tables yet the morning-health tables are gone, the net is
+    # disarmed — be LOUD about that instead of vanishing (P1-2).
+    needed = ("ct_profile_cache", "workflow_runs", "wf_pending_actions")
+    present = [
+        t for t in needed
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)
+        ).fetchone() is not None
+    ]
+    if not present:
+        return []  # bare DB — matches run()'s fresh-DB tolerance
+    if len(present) < len(needed):
+        missing = [t for t in needed if t not in present]
+        return [Alert(
+            condition="F_MORNING_SCHEMA",
+            severity="P1",
+            subject="[P1] VB morning-health detector DISARMED — missing tables",
+            body=("detect_f_morning_health expected tables "
+                  f"{list(needed)} but {missing} are absent on a DB that has "
+                  f"{present}. The unattended morning-health net cannot run "
+                  "until the schema is repaired (migration not applied?)."),
+            details={"missing": missing, "present": present},
+        )]
+
+    today = now.strftime("%Y-%m-%d")
+    prefetched = conn.execute(
+        "SELECT COUNT(*) FROM ct_profile_cache WHERE cohort_date=? AND status='found'",
+        (today,),
+    ).fetchone()[0]
+    enrolled = conn.execute(
+        "SELECT COUNT(*) FROM workflow_runs WHERE substr(enrolled_at_ist,1,10)=?",
+        (today,),
+    ).fetchone()[0]
+    # Only REAL fires count — SHADOW_FIRED also stamps fired_at_ist, so without
+    # this filter the net reads healthy in shadow mode / on a silent shadow
+    # fallback, exactly when it must not (P1-1).
+    fired = conn.execute(
+        "SELECT COUNT(*) FROM wf_pending_actions "
+        "WHERE substr(fired_at_ist,1,10)=? AND status='FIRED'",
+        (today,),
+    ).fetchone()[0]
+
+    problem = None
+    # Fetch/prefetch are done (no later retry) → 0-prefetched is terminal at 09:00.
+    if prefetched == 0:
+        problem = ("no cohort prefetched today — the 07:30 fetch and/or 07:32 "
+                   "prefetch produced nothing (Redshift down? collection_view empty? "
+                   "CT fetch failed?). NO calls will go out today.")
+    # Enrollment/firing have scheduled catch-ups — only escalate after they've run.
+    elif now.hour >= MORNING_PIPELINE_CHECK_HOUR:
+        if enrolled == 0:
+            problem = (f"{prefetched} customers prefetched but 0 ENROLLED by "
+                       f"{now.strftime('%H:%M')} IST — the enrollment poller failed "
+                       "or matched nobody (cron TZ? lock? segment mismatch?). NO calls today.")
+        elif fired == 0:
+            problem = (f"{enrolled} enrolled but 0 real FIRED by {now.strftime('%H:%M')} "
+                       "IST — the scheduler is not firing (kill-switch? gate? CT creds? "
+                       "shadow latch?). Calls are stuck.")
+    if problem is None:
+        return []
+    body = (
+        f"VB Collections morning-health FAILURE ({today}):\n\n"
+        f"  prefetched(found) = {prefetched}\n"
+        f"  enrolled today    = {enrolled}\n"
+        f"  fired today       = {fired}\n\n"
+        f"{problem}\n\n"
+        "Self-cure + the retry crons (enrollment 08:30/10:00/12:00, fetch "
+        "fallback 08:15, executor/scheduler */5) auto-retry — but this has NOT "
+        "recovered by the check time. Manual check needed: ssh the server, see "
+        "logs/{fetch_dpd1,prefetch,enrollment,scheduler}_<date>.log and "
+        "docs/runbook.md.")
+    return [Alert(
+        condition="F_MORNING_HEALTH",
+        severity="P0",
+        subject=f"[P0] VB Collections morning DID NOT FIRE — {today}",
+        body=body,
+        details={"prefetched": prefetched, "enrolled": enrolled, "fired": fired},
+    )]
+
+
 _DETECTORS = (
     detect_a_daemon_down,
     detect_b_run_error,
     detect_c_run_waiting,
     detect_d_kill_switch,
     detect_e_queue_buildup,
+    detect_f_morning_health,
 )
 
 
 # ---------------------------------------------------------------- orchestration
 
 
+_GMAIL_CONFIG = os.environ.get("WF_GMAIL_CONFIG", "/home/ubuntu/loan_closure/config_gmail.json")
+
+
+def _send_alert_email(payload: dict) -> bool:
+    """Actually EMAIL an alert to the owner. alerts.py was log-only ("Phase 8.5
+    no SMTP") — which means an unattended failure was invisible. This sends it.
+    Gated by WF_ALERTS_SEND=1 (off in tests/dev; on in the server cron) so the
+    test suite never emails. Best-effort: a send failure is logged, never raises
+    (the alert is still logged + cooldown-marked regardless). Reuses the same
+    gmail config as the other emailers (governance: smtplib in a deployed cron
+    script is allowed; the guard only blocks ad-hoc Bash)."""
+    if os.environ.get("WF_ALERTS_SEND", "0") != "1":
+        return False
+    try:
+        with open(_GMAIL_CONFIG) as f:
+            gcfg = json.load(f)
+        sender = gcfg["user"]
+        msg = MIMEText(payload["body"], _charset="utf-8")
+        msg["Subject"] = payload["subject"]
+        msg["From"] = f"VB Collections Alerts <{sender}>"
+        msg["To"] = payload["to"]
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+            server.starttls()
+            server.login(sender, gcfg["password"])
+            server.sendmail(sender, [payload["to"]], msg.as_string())
+        log.warning("alert EMAILED: %s → %s", payload["subject"], payload["to"])
+        return True
+    except Exception as exc:  # noqa: BLE001 — alert delivery is best-effort; never crash the watchdog
+        log.error("alert email FAILED (%s): %s — alert still logged", payload["subject"], exc)
+        return False
+
+
 def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
-    """Read workflow.db; run all 5 detectors; de-dupe against cooldown;
+    """Read workflow.db; run all 6 detectors; de-dupe against cooldown;
     return stats.
 
     Args:
@@ -484,6 +627,7 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
         return {
             "alerts_emitted": 0,
             "alerts_skipped_cooldown": 0,
+            "alerts_emailed": 0,
             "alerts": [],
             "parse_failures": 0,
         }
@@ -498,6 +642,7 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
 
         emitted: list[Alert] = []
         skipped = 0
+        emailed = 0
         for detector in _DETECTORS:
             try:
                 found = detector(conn, now)
@@ -528,10 +673,17 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
                 if not dry_run:
                     _mark_fired(conn, alert.condition, now)
                     last_fired[alert.condition] = now
+                    # WS12 unattended-ops: actually deliver the alert. Gated by
+                    # WF_ALERTS_SEND=1 (server cron only). Best-effort — a send
+                    # failure never raises; the alert is already logged +
+                    # cooldown-marked, and the cooldown prevents re-email spam.
+                    if _send_alert_email(alert.as_email_payload()):
+                        emailed += 1
 
         return {
             "alerts_emitted": len(emitted),
             "alerts_skipped_cooldown": skipped,
+            "alerts_emailed": emailed,
             "alerts": [a.as_email_payload() for a in emitted],
             "parse_failures": len(_PARSE_FAILURES),
         }
@@ -545,8 +697,8 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="workflow.alerts",
-        description="Phase 8.5 alert watcher. Reads state/workflow.db; emits "
-        "alert payloads (no SMTP).",
+        description="Alert watcher. Reads state/workflow.db; emits alerts and, "
+        "when WF_ALERTS_SEND=1, EMAILS them to the owner.",
     )
     p.add_argument(
         "--workflow-db",
@@ -556,8 +708,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Do not update the alert_state cooldown table; otherwise "
-        "behaviour is identical (payloads are always log-only in Phase 8.5).",
+        help="Do not update the alert_state cooldown table AND do not email; "
+        "alerts are only logged. (Note: a non-dry-run with WF_ALERTS_SEND=1 "
+        "sends real email.)",
     )
     p.add_argument(
         "--log-level",
