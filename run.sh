@@ -92,6 +92,11 @@ case "${MODE}" in
         # they stay payload-only. smtplib in a deployed cron is governance-OK.
         export WF_ALERTS_SEND="${WF_ALERTS_SEND:-1}"
         export WF_GMAIL_CONFIG="${WF_GMAIL_CONFIG:-/home/ubuntu/loan_closure/config_gmail.json}"
+        # External dead-man's-switch: set WF_HEALTHCHECK_URL in secrets/ops.env
+        # (auto-exported via the `set -a` source above). Each alerts run pings it;
+        # if pings stop because the whole box died, the external service (e.g.
+        # healthchecks.io) alerts the owner. Unset = ping no-ops; the on-box email
+        # watchdog still works.
         TIMEOUT_SEC=300 ;;
     digest)
         TIMEOUT_SEC=600 ;;

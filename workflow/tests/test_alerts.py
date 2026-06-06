@@ -514,3 +514,61 @@ def test_send_alert_email_missing_config_no_raise(monkeypatch) -> None:
     monkeypatch.setattr(alerts, "_GMAIL_CONFIG", "/nonexistent/cfg.json")
     assert alerts._send_alert_email(
         {"to": "x@y.com", "subject": "s", "body": "b"}) is False
+
+
+# ---------------------------------------------------------------- detect_g (capacity)
+
+
+def _set_pending(db: Path, n: int) -> None:
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DELETE FROM wf_pending_actions")
+        for i in range(n):
+            conn.execute("INSERT INTO wf_pending_actions(customer_id,status) "
+                         "VALUES (?,'PENDING')", (f"p{i}",))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_detect_g(db: Path, now: datetime) -> list:
+    conn = sqlite3.connect(str(db))
+    try:
+        return alerts.detect_g_capacity_saturation(conn, now)
+    finally:
+        conn.close()
+
+
+def test_g_fires_when_backlog_high_late(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_pending(db, alerts.CAPACITY_BACKLOG_THRESHOLD + 10)
+    out = _run_detect_g(db, _today_at(17))
+    assert any(a.condition == "G_CAPACITY_SATURATION" and a.severity == "P2" for a in out)
+
+
+def test_g_silent_below_threshold(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_pending(db, 5)
+    assert _run_detect_g(db, _today_at(17)) == []
+
+
+def test_g_silent_before_check_hour(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _set_pending(db, alerts.CAPACITY_BACKLOG_THRESHOLD + 10)
+    assert _run_detect_g(db, _today_at(12)) == []
+
+
+# ---------------------------------------------------------------- healthcheck ping
+
+
+def test_ping_healthcheck_noop_when_unset(monkeypatch) -> None:
+    # No URL configured → must be a silent no-op (no network, no raise).
+    monkeypatch.delenv("WF_HEALTHCHECK_URL", raising=False)
+    alerts._ping_healthcheck(failed=False)  # must not raise
+    alerts._ping_healthcheck(failed=True)
+
+
+def test_ping_healthcheck_bad_url_no_raise(monkeypatch) -> None:
+    # Unreachable URL → caught, never raises (best-effort liveness ping).
+    monkeypatch.setenv("WF_HEALTHCHECK_URL", "http://127.0.0.1:1/nope")
+    alerts._ping_healthcheck(failed=False)  # must not raise

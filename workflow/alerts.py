@@ -562,6 +562,65 @@ def detect_f_morning_health(conn: sqlite3.Connection, now: datetime) -> list[Ale
     )]
 
 
+# detect_g capacity-saturation: a large unfired PENDING backlog late in the
+# window means the 750/hr cap can't clear today's queue (excess rolls forward).
+CAPACITY_CHECK_HOUR = 16
+CAPACITY_BACKLOG_THRESHOLD = int(os.environ.get("WF_CAPACITY_ALERT_BACKLOG", "1500"))
+
+
+def detect_g_capacity_saturation(conn: sqlite3.Connection, now: datetime) -> list[Alert]:
+    """P2 throughput signal (not a failure — excess calls roll to tomorrow, not
+    lost). Late in the call window, a large unfired PENDING backlog means the
+    1-30 base has outgrown the daily capacity (cap 750/hr). Recurring daily =
+    raise WF_HOURLY_CALL_CAP or widen the window. Only after CAPACITY_CHECK_HOUR."""
+    if now.hour < CAPACITY_CHECK_HOUR:
+        return []
+    # No schema guard here (unlike detect_f): a missing wf_pending_actions is
+    # caught by run()'s OperationalError skip. That silent-skip is acceptable for
+    # this P2 advisory because the SAME table absence already trips detect_f's
+    # F_MORNING_SCHEMA P1 — the partial-schema blind spot is covered by a sibling.
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM wf_pending_actions WHERE status='PENDING'"
+    ).fetchone()[0]
+    if pending < CAPACITY_BACKLOG_THRESHOLD:
+        return []
+    hours_left = max(0, 19 - now.hour)
+    return [Alert(
+        condition="G_CAPACITY_SATURATION",
+        severity="P2",
+        subject=f"[P2] VB Collections capacity — {pending} calls unfired, ~{hours_left}h left",
+        body=(f"{pending} calls are queued (PENDING) at {now.strftime('%H:%M')} IST "
+              f"with ~{hours_left}h of call window left (cap 750/hr → ~{hours_left * 750} "
+              "more possible today). The excess rolls forward to tomorrow on each "
+              "customer's call-day (NOT lost). If this recurs daily, the 1-30 base "
+              "has outgrown the daily call capacity — raise WF_HOURLY_CALL_CAP or "
+              "widen the window."),
+        details={"pending": pending, "hours_left": hours_left},
+    )]
+
+
+def _ping_healthcheck(failed: bool) -> None:
+    """EXTERNAL dead-man's-switch. Pings ``WF_HEALTHCHECK_URL`` (e.g. a
+    healthchecks.io check) on every non-dry-run alerts pass. If the pings STOP —
+    the whole server died, cron was wiped, the box lost power — the external
+    service alerts the owner. That is the ONE failure mode the on-box watchdog
+    structurally cannot self-report (a dead box can't email). ``/fail`` also
+    signals an active P0 so the external check doubles as a failure channel if
+    gmail delivery itself breaks. No-op if the URL is unset (dev/tests).
+    Best-effort: never raises."""
+    url = os.environ.get("WF_HEALTHCHECK_URL", "").strip()
+    if not url:
+        return
+    ping = url.rstrip("/") + ("/fail" if failed else "")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(ping, timeout=10) as resp:  # noqa: S310 — owner-configured URL
+            resp.read()
+        log.info("healthcheck pinged: %s", ping)
+    except Exception as exc:  # noqa: BLE001 — liveness ping is best-effort, must never crash the watchdog
+        log.warning("healthcheck ping failed (%s): %s", ping, exc)
+
+
 _DETECTORS = (
     detect_a_daemon_down,
     detect_b_run_error,
@@ -569,6 +628,7 @@ _DETECTORS = (
     detect_d_kill_switch,
     detect_e_queue_buildup,
     detect_f_morning_health,
+    detect_g_capacity_saturation,
 )
 
 
@@ -628,6 +688,7 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
             "alerts_emitted": 0,
             "alerts_skipped_cooldown": 0,
             "alerts_emailed": 0,
+            "alerts_active_p0": False,
             "alerts": [],
             "parse_failures": 0,
         }
@@ -643,6 +704,10 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
         emitted: list[Alert] = []
         skipped = 0
         emailed = 0
+        # Active P0 = emitted OR cooldown-suppressed-this-run. Drives the
+        # healthcheck /fail signal so it doesn't flap back to OK while a P0
+        # condition persists (just suppressed by its 60-min cooldown).
+        active_p0 = False
         for detector in _DETECTORS:
             try:
                 found = detector(conn, now)
@@ -653,6 +718,8 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
                 log.debug("alerts: detector %s skipped (%s)", detector.__name__, exc)
                 continue
             for alert in found:
+                if alert.severity == "P0":
+                    active_p0 = True
                 last = last_fired.get(alert.condition)
                 if last is not None and last >= cooldown_cutoff:
                     skipped += 1
@@ -680,10 +747,17 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
                     if _send_alert_email(alert.as_email_payload()):
                         emailed += 1
 
+        # External dead-man's-switch: prove the watchdog is alive (and signal a
+        # persisting P0). If these pings stop, the box itself is dead and the
+        # external service alerts — the one thing on-box monitoring can't do.
+        if not dry_run:
+            _ping_healthcheck(active_p0)
+
         return {
             "alerts_emitted": len(emitted),
             "alerts_skipped_cooldown": skipped,
             "alerts_emailed": emailed,
+            "alerts_active_p0": active_p0,
             "alerts": [a.as_email_payload() for a in emitted],
             "parse_failures": len(_PARSE_FAILURES),
         }
