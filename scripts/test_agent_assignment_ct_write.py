@@ -157,3 +157,77 @@ def test_missing_column_is_nonfatal(tmp_path, monkeypatch):
     stats = em._write_ct_allocation(str(db), dry_run=False, creds_path=None)
     assert "error" in stats
     assert stats["written"] == 0
+
+
+# ---------------------------------------------------------------- _fetch_assignments
+# calls_made/calls_refused computation + legacy-reason filter. The P0 regression:
+# an all-refused (bot-couldn't-reach) max_attempts_reached customer has
+# calls_made=0 but MUST still reach an agent.
+
+from datetime import datetime  # noqa: E402
+
+
+def _make_full_db(tmp_path: Path, specs: list[dict]) -> str:
+    db = tmp_path / "wf_full.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE agent_assignments (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " customer_id TEXT, reason TEXT, source TEXT, assigned_at_ist TEXT,"
+        " assigned_to TEXT, resolved_at_ist TEXT, resolution_note TEXT,"
+        " run_id INTEGER, ct_allocation_written_at_ist TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE workflow_runs (id INTEGER PRIMARY KEY, scratchpad_json TEXT,"
+        " terminal_status TEXT, enrolled_at_ist TEXT, terminated_at_ist TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE wf_pending_actions (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " run_id INTEGER, status TEXT)"
+    )
+    today = datetime.now(em.IST).strftime("%Y-%m-%d %H:%M:%S")
+    for s in specs:
+        conn.execute(
+            "INSERT INTO agent_assignments (customer_id, reason, run_id, assigned_at_ist)"
+            " VALUES (?,?,?,?)", (s["customer_id"], s["reason"], s["run_id"], today))
+        conn.execute("INSERT INTO workflow_runs (id, scratchpad_json) VALUES (?, '{}')",
+                     (s["run_id"],))
+        for _ in range(s.get("fired", 0)):
+            conn.execute("INSERT INTO wf_pending_actions (run_id, status) VALUES (?, 'FIRED')",
+                         (s["run_id"],))
+        for _ in range(s.get("suppressed", 0)):
+            conn.execute("INSERT INTO wf_pending_actions (run_id, status) VALUES (?, 'SUPPRESSED')",
+                         (s["run_id"],))
+    conn.commit()
+    conn.close()
+    return str(db)
+
+
+def test_fetch_calls_made_counts_real_fires(tmp_path):
+    db = _make_full_db(tmp_path, [
+        {"customer_id": "1", "reason": "rtp_needs_review", "run_id": 10, "fired": 1}])
+    rows = em._fetch_assignments(db, None, all_time=True)
+    assert len(rows) == 1 and rows[0]["calls_made"] == 1
+
+
+def test_fetch_keeps_all_refused_max_attempts(tmp_path):
+    # P0 regression: all attempts gate-refused (DND/cap/window) → calls_made=0
+    # but the customer MUST still be handed to an agent (bot couldn't reach them).
+    db = _make_full_db(tmp_path, [
+        {"customer_id": "2", "reason": "max_attempts_reached", "run_id": 11,
+         "fired": 0, "suppressed": 3}])
+    rows = em._fetch_assignments(db, None, all_time=True)
+    assert len(rows) == 1
+    assert rows[0]["calls_made"] == 0
+    assert rows[0]["calls_refused"] == 3
+
+
+def test_fetch_drops_legacy_timeout_even_if_fired(tmp_path):
+    db = _make_full_db(tmp_path, [
+        {"customer_id": "3", "reason": "disposition_timeout_24h", "run_id": 12, "fired": 2}])
+    assert em._fetch_assignments(db, None, all_time=True) == []
+
+
+def test_calls_cell_flags_unreached():
+    assert em._calls_cell({"calls_made": 2}) == "2"
+    assert "unreached" in em._calls_cell({"calls_made": 0, "calls_refused": 3})
+    assert "3 refused" in em._calls_cell({"calls_made": 0, "calls_refused": 3})

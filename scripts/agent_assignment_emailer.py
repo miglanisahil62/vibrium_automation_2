@@ -120,6 +120,14 @@ def _fetch_assignments(
             date_filter = "substr(aa.assigned_at_ist, 1, 10) = ?"
             params = [today]
 
+        # calls_made = real connect-attempts that WENT OUT for this run
+        # (FIRED/SHADOW_FIRED/FIRED_RECOVERED), NOT scratchpad 'attempts' — v8
+        # counts fires in 'fire_seq', so reading 'attempts' wrongly showed 0 for
+        # every v8 assignment. calls_refused = attempts the gate REFUSED
+        # (SUPPRESSED/ERROR: DND, daily cap, 08:00-19:00 window). A customer the
+        # bot could never reach (all-refused) still legitimately reaches
+        # max_attempts_reached with calls_made=0 — and is the HIGHEST-signal
+        # handoff, so we keep + FLAG it, never drop it (master-auditor P0).
         sql = (
             "SELECT "
             "  aa.id, aa.customer_id, aa.reason, aa.assigned_at_ist, aa.run_id, "
@@ -128,14 +136,35 @@ def _fetch_assignments(
             "  json_extract(wr.scratchpad_json, '$.coll_collection_risk_segmentation') AS risk_seg, "
             "  json_extract(wr.scratchpad_json, '$.coll_notification_replied') AS wa_status, "
             "  json_extract(wr.scratchpad_json, '$.dpd') AS dpd, "
-            "  json_extract(wr.scratchpad_json, '$.attempts') AS attempts "
+            "  json_extract(wr.scratchpad_json, '$.attempts') AS attempts, "
+            "  (SELECT COUNT(*) FROM wf_pending_actions p WHERE p.run_id = aa.run_id "
+            "     AND p.status IN ('FIRED','SHADOW_FIRED','FIRED_RECOVERED')) AS calls_made, "
+            "  (SELECT COUNT(*) FROM wf_pending_actions p WHERE p.run_id = aa.run_id "
+            "     AND p.status IN ('SUPPRESSED','ERROR')) AS calls_refused "
             "FROM agent_assignments aa "
             "LEFT JOIN workflow_runs wr ON wr.id = aa.run_id "
             "WHERE " + date_filter +
             " ORDER BY aa.assigned_at_ist DESC"
         )
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        # ONE guard: drop only the legacy v3/v4 'disposition_timeout_24h' reason.
+        # v8 RETIRED it (the 60-min re-evaluate re-queues a no-disposition call
+        # instead of escalating), so it's dead going forward and today's batch
+        # are customers v8 is already re-calling. v8's real reasons —
+        # dispute_or_nrp / rtp_needs_review / max_attempts_reached — are all kept,
+        # INCLUDING calls_made=0 (all-refused) ones, which are flagged below.
+        legacy_dead = {"disposition_timeout_24h"}
+        kept = [r for r in rows if r.get("reason") not in legacy_dead]
+        drop_legacy = len(rows) - len(kept)
+        never_reached = sum(1 for r in kept if (r.get("calls_made") or 0) == 0)
+        if drop_legacy or never_reached:
+            log.warning(
+                "agent_assignment_emailer: %d assignment(s) → kept %d "
+                "(of which %d never-reached/all-refused — flagged, NOT dropped); "
+                "dropped %d legacy disposition_timeout_24h (v8 re-calls those)",
+                len(rows), len(kept), never_reached, drop_legacy,
+            )
+        return kept
     finally:
         if conn is not None:
             conn.close()
@@ -145,12 +174,24 @@ def _reason_label(reason: str) -> str:
     return REASON_LABELS.get(reason, reason)
 
 
+def _calls_cell(r: dict) -> str:
+    """'Calls made' cell. A 0 here is NOT 'never tried' — it means every fire
+    was gate-refused (DND / daily cap / outside 08:00-19:00), i.e. the bot could
+    not reach them. Flag it so the agent knows it's a high-priority unreached
+    customer, not a no-op."""
+    made = r.get("calls_made") or 0
+    if made > 0:
+        return str(made)
+    refused = r.get("calls_refused") or 0
+    return f"0 ⚠ unreached ({refused} refused)" if refused else "0 ⚠ unreached"
+
+
 def _build_csv(rows: list[dict]) -> bytes:
     buf = io.StringIO()
     fieldnames = [
         "customer_id", "assigned_at_ist", "reason_label", "reason_code",
         "dpd", "risk_seg", "wa_status", "bot_calling",
-        "attempts_before_assign", "terminal_status",
+        "calls_made", "calls_refused", "attempts_before_assign", "terminal_status",
         "enrolled_at_ist", "terminated_at_ist", "run_id",
     ]
     w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
@@ -165,6 +206,8 @@ def _build_csv(rows: list[dict]) -> bytes:
             "risk_seg":             r.get("risk_seg", ""),
             "wa_status":            r.get("wa_status", ""),
             "bot_calling":          r.get("bot_calling", ""),
+            "calls_made":           r.get("calls_made", 0) or 0,
+            "calls_refused":        r.get("calls_refused", 0) or 0,
             "attempts_before_assign": r.get("attempts", 0) or 0,
             "terminal_status":      r.get("terminal_status", ""),
             "enrolled_at_ist":      r.get("enrolled_at_ist", ""),
@@ -221,7 +264,7 @@ def _build_html(rows: list[dict], date_str: str) -> str:
         f"<td style='padding:4px 6px'>{_reason_label(r.get('reason',''))}</td>"
         f"<td style='padding:4px 6px;text-align:center'>{r.get('dpd') or '—'}</td>"
         f"<td style='padding:4px 6px;text-align:center'>{r.get('risk_seg') or '—'}</td>"
-        f"<td style='padding:4px 6px;text-align:center'>{r.get('attempts') or 0}</td>"
+        f"<td style='padding:4px 6px;text-align:center'>{_calls_cell(r)}</td>"
         f"<td style='padding:4px 6px;font-size:11px;color:#555'>{r.get('bot_calling') or '—'}</td>"
         "</tr>"
         for r in rows
