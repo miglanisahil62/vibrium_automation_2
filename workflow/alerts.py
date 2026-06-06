@@ -599,6 +599,34 @@ def detect_g_capacity_saturation(conn: sqlite3.Connection, now: datetime) -> lis
     )]
 
 
+_HEARTBEAT_LIB = os.environ.get("WF_HEARTBEAT_LIB", "/home/ubuntu/heartbeat_lib.py")
+
+
+def _emit_pipeline_health(failed: bool, summary: str) -> None:
+    """Push a consolidated pipeline-HEALTH heartbeat through the EXISTING ops
+    webhook (heartbeat_lib → OPS_WEBHOOK_URL, an off-box Apps Script sheet) —
+    the external layer reusing infra already in place, no new account. The
+    per-job run.sh heartbeats only say 'the job ran' (always exit 0 for alerts),
+    so they'd show all-green even on a 0-call morning; this emits status='down'
+    whenever a P0 is active so the external sheet reflects TRUE health, and the
+    heartbeat ceasing entirely signals total-server-death. No-op if the lib is
+    absent (dev/tests). Best-effort — never raises (heartbeat_lib already
+    swallows webhook errors + falls back to a local file)."""
+    if not os.path.exists(_HEARTBEAT_LIB):
+        return
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_wf_hb_lib", _HEARTBEAT_LIB)
+        if spec is None or spec.loader is None:
+            return
+        hb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hb)
+        hb.heartbeat("wf_pipeline_health", "down" if failed else "ok",
+                     summary=(summary or "all clear")[:200])
+    except Exception as exc:  # noqa: BLE001 — external heartbeat is best-effort
+        log.warning("pipeline-health heartbeat failed: %s", exc)
+
+
 def _ping_healthcheck(failed: bool) -> None:
     """EXTERNAL dead-man's-switch. Pings ``WF_HEALTHCHECK_URL`` (e.g. a
     healthchecks.io check) on every non-dry-run alerts pass. If the pings STOP —
@@ -751,7 +779,9 @@ def run(workflow_db_path: str | Path, dry_run: bool = False) -> dict:
         # persisting P0). If these pings stop, the box itself is dead and the
         # external service alerts — the one thing on-box monitoring can't do.
         if not dry_run:
+            health_summary = "; ".join(a.subject for a in emitted) if emitted else "all clear"
             _ping_healthcheck(active_p0)
+            _emit_pipeline_health(active_p0, health_summary)
 
         return {
             "alerts_emitted": len(emitted),

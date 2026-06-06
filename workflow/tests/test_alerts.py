@@ -572,3 +572,10 @@ def test_ping_healthcheck_bad_url_no_raise(monkeypatch) -> None:
     # Unreachable URL → caught, never raises (best-effort liveness ping).
     monkeypatch.setenv("WF_HEALTHCHECK_URL", "http://127.0.0.1:1/nope")
     alerts._ping_healthcheck(failed=False)  # must not raise
+
+
+def test_emit_pipeline_health_noop_when_lib_absent(monkeypatch) -> None:
+    # heartbeat_lib not present (dev/test) → silent no-op, never raises.
+    monkeypatch.setattr(alerts, "_HEARTBEAT_LIB", "/nonexistent/heartbeat_lib.py")
+    alerts._emit_pipeline_health(failed=True, summary="x")  # must not raise
+    alerts._emit_pipeline_health(failed=False, summary="all clear")
