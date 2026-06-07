@@ -39,12 +39,21 @@ for envf in redshift.env ops.env; do
     fi
 done
 
-# Fallback mode: skip entirely if today's cohort CSV already exists (the primary
-# 07:30 run succeeded). This makes the 08:15 cron a pure catch-up for a failed
-# primary, never a duplicate fetch.
+# Fallback mode: skip ONLY if today's cohort CSV already exists AND carries at
+# least one candidate (the primary 07:30 run genuinely succeeded). An EMPTY CSV
+# (header only) means the 07:30 fetch hit collection_view while it was empty /
+# mid-refresh and wrote a 0-row cohort — that is a failure the primary cannot
+# self-heal, since it never re-queries. So in fallback mode we treat a present
+# but empty file as "not done yet" and fall through to re-query collection_view,
+# giving the upstream refresh ~45 extra minutes to land. Count DATA rows (skip
+# the header) so a missing trailing newline can't be mistaken for empty/non-empty.
 if [[ "${MODE}" == "fallback" && -f "${TODAY_CSV}" ]]; then
-    echo "$(date '+%F %T %Z') — fallback: ${TODAY_CSV} already present; nothing to do" >> "${LOG_FILE}"
-    exit 0
+    DATA_ROWS=$(tail -n +2 "${TODAY_CSV}" 2>/dev/null | grep -c .)
+    if [[ "${DATA_ROWS}" -gt 0 ]]; then
+        echo "$(date '+%F %T %Z') — fallback: ${TODAY_CSV} already present with ${DATA_ROWS} candidate(s); nothing to do" >> "${LOG_FILE}"
+        exit 0
+    fi
+    echo "$(date '+%F %T %Z') — fallback: ${TODAY_CSV} present but EMPTY (0 candidates) — re-querying collection_view" >> "${LOG_FILE}"
 fi
 
 echo "===== $(date '+%F %T %Z') — starting fetch_dpd1 (mode=${MODE}, timeout=${TIMEOUT_SEC}s) =====" >> "${LOG_FILE}"
