@@ -28,6 +28,7 @@ WORKFLOW_DB="${WF_WORKFLOW_DB:-${BASE_DIR}/state/workflow.db}"
 VIBRIUM_DB="${WF_VIBRIUM_DB:-/home/ubuntu/vibrium-automation/state/vibrium.db}"
 CT_CREDS="${WF_CT_CREDS:-/home/ubuntu/Collections_v3/Clevertap campaigns/config_CT_credentials.json}"
 HOURLY_CALL_CAP="${WF_HOURLY_CALL_CAP:-750}"
+LOW_HOURLY_CAP="${WF_LOW_HOURLY_CAP:-1000}"
 
 cd "${BASE_DIR}"
 # shellcheck disable=SC1091
@@ -66,7 +67,7 @@ case "${MODE}" in
         TIMEOUT_SEC=1500;  FLAGS=(--batch-limit 5000) ;;
     scheduler)
         TIMEOUT_SEC=1500
-        FLAGS=(--vibrium-db "${VIBRIUM_DB}" --ct-creds "${CT_CREDS}" --hourly-call-cap "${HOURLY_CALL_CAP}")
+        FLAGS=(--vibrium-db "${VIBRIUM_DB}" --ct-creds "${CT_CREDS}" --hourly-call-cap "${HOURLY_CALL_CAP}" --low-hourly-cap "${LOW_HOURLY_CAP}")
         [[ -n "${SHADOW_FLAG}" ]] && FLAGS+=("${SHADOW_FLAG}") ;;
     ingest)
         TIMEOUT_SEC=1500 ;;

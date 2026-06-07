@@ -83,6 +83,16 @@ def execute(
     if attempts_today < 0:
         attempts_today = 0
 
+    # A no-connect reattempt is reset to the 'general' tier so a stale 'reserve'
+    # (from a prior PTP/Agree fire that then no-connected) can't leak into the
+    # retry fire. EXCEPTION (2026-06-07 owner rule): a 'low' catch-all row stays
+    # 'low' — a no-connected one_time (non-agent-allocated) customer must NEVER
+    # be promoted into the eligible 750-capped tier. Today the one_time graph
+    # routes a no-connect straight to TERM_NO_OUTCOME and never reaches this gate
+    # (verified), so this is defensive: it preserves the invariant if the
+    # one_time graph ever gains a same-day retry path.
+    retry_class = "low" if run.scratchpad.get("priority_class") == "low" else "general"
+
     now = _now_ist()
     # The next same-day call would fire ~min_gap_hours from now (after the
     # same-day WAIT). It must land strictly before window_close_hour on the SAME
@@ -97,12 +107,9 @@ def execute(
     if has_budget and room_today:
         return NodeResult(
             next_edge="retry_today",
-            # WS7/2c defense-in-depth (P2-2): a no-connect reattempt is NOT a
-            # reserve follow-up — reset priority_class to 'general' here so a
-            # stale 'reserve' (from a prior PTP/Agree fire that then no-connected)
-            # can never leak into the retry fire, independent of the downstream
-            # WAIT node's reset.
-            scratchpad_patch={key: attempts_today + 1, "priority_class": "general"},
+            # retry_class (computed above): no-connect reattempt → 'general'
+            # (drops a stale 'reserve'), but a 'low' catch-all row stays 'low'.
+            scratchpad_patch={key: attempts_today + 1, "priority_class": retry_class},
             side_effect=(
                 f"SAME_DAY_GATE retry_today: retries {attempts_today}→"
                 f"{attempts_today + 1} (max {max_per_day - 1}), "
@@ -115,7 +122,7 @@ def execute(
               else f"no room today (next ~{candidate.strftime('%H:%M')} >= {window_close_hour}:00)")
     return NodeResult(
         next_edge="next_day",
-        scratchpad_patch={"priority_class": "general"},  # P2-2: no-connect → general
+        scratchpad_patch={"priority_class": retry_class},  # no-connect → general (low stays low)
         side_effect=f"SAME_DAY_GATE next_day: {reason}",
         ready_at_ist=None,
     )

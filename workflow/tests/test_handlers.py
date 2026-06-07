@@ -1212,6 +1212,24 @@ class TestSameDayGate:
         assert r.next_edge == "next_day"
         assert r.scratchpad_patch == {"priority_class": "general"}
 
+    def test_low_catchall_stays_low_on_retry(self, monkeypatch, base_run: Run):
+        # 2026-06-07 owner rule: a no-connected one_time (priority_class='low')
+        # row must NOT be promoted into the eligible 750-capped tier on its
+        # same-day reattempt — it stays 'low'.
+        self._at(monkeypatch, 12)
+        base_run.scratchpad = {"attempts_today": 0, "priority_class": "low"}
+        r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
+        assert r.next_edge == "retry_today"
+        assert r.scratchpad_patch == {"attempts_today": 1, "priority_class": "low"}
+
+    def test_low_catchall_stays_low_on_next_day(self, monkeypatch, base_run: Run):
+        # Same invariant on the next_day edge (budget spent).
+        self._at(monkeypatch, 12)
+        base_run.scratchpad = {"attempts_today": 2, "priority_class": "low"}
+        r = sdg_mod.execute(self._node(), base_run, ctx=None, txn=None)
+        assert r.next_edge == "next_day"
+        assert r.scratchpad_patch == {"priority_class": "low"}
+
     def test_next_day_when_window_closing(self, monkeypatch, base_run: Run):
         # 18:30 + 1h = 19:30 → past 19:00 → no room today → next_day.
         self._at(monkeypatch, 18)

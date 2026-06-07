@@ -72,21 +72,42 @@ IST = ZoneInfo("Asia/Kolkata")
 
 log = logging.getLogger("workflow_scheduler")
 
-# How many wf_pending_actions rows we attempt per tick. Matches the architecture
-# doc's TICK_BATCH_LIMIT for the executor; the scheduler uses the same default
-# so the call volume per tick is bounded.
-DEFAULT_BATCH_LIMIT = 100
+# How many wf_pending_actions rows we attempt per tick. Raised from the legacy
+# 100 to 800 (2026-06-07): at 100/tick the scheduler trickled ~100 fires every
+# 5 min and could NOT reach the hourly cap when a large same-day cohort came due
+# at once (e.g. 4,556 rows due at 12:00 drained at ~100/tick instead of the 750
+# cap). 800 lets one tick fire up to the full remaining hourly headroom in a
+# single pass. Still bounded by the rolling hourly cap below — so this is a
+# per-tick ceiling, NOT an increase beyond the hourly envelope. Env: WF_SCHED_BATCH_LIMIT.
+try:
+    DEFAULT_BATCH_LIMIT = max(1, int(os.environ.get("WF_SCHED_BATCH_LIMIT", "800")))
+except (TypeError, ValueError):
+    DEFAULT_BATCH_LIMIT = 800
 
-# VB pipeline throughput ceiling. The bot vendor can place ~700-800 calls/hour;
-# we cap at 750 to stay inside that envelope. Enforced as a rolling 60-minute
-# window: each tick may fire at most (HOURLY_CALL_CAP - fires_in_last_60min).
-# This both prevents over-driving the vendor AND keeps utilisation near 100%
-# (as long as demand exists, every hour fills to the cap). Overflow rows stay
-# PENDING and are naturally picked up in the next hour / next day.
-# Scope note: this counts THIS workflow's fires only (wf_pending_actions). If
-# adhoc Vibrium is calling concurrently, the combined vendor rate could exceed
-# the cap — a cross-system hourly cap is a documented follow-up.
-DEFAULT_HOURLY_CALL_CAP = 750
+# VB pipeline throughput ceiling — TWO tiers (WS7 reserved-bandwidth + the
+# 2026-06-07 owner rule: "once eligible are all called, fire the non-agent-
+# allocated catch-all without caring for the overall limit"):
+#   * NON-LOW (segmented / reserve / general eligible) — capped at
+#     HOURLY_CALL_CAP (750) to stay inside the vendor's eligible-priority
+#     envelope.
+#   * LOW (one_time catch-all = blank-label, non-agent-allocated) — EXEMPT from
+#     the 750 cap; may fill the pipeline up to LOW_HOURLY_CAP (1000) TOTAL. The
+#     ORDER BY fires 'low' strictly LAST, so it only consumes headroom AFTER
+#     every eligible row has had its shot ("all eligible called"). Per-customer
+#     safety (3/day, 1h cooldown, 08:00-19:00 RBI window) is NEVER waived — only
+#     the global hourly throughput ceiling is lifted for the catch-all.
+# Both enforced on the same rolling 60-minute window. The combined count
+# (cca.count_fires_since) includes adhoc Vibrium fires (shared vendor); the
+# catch-all's own contribution is subtracted out to compute the eligible (non-
+# low) load against the 750 cap. Env: WF_HOURLY_CALL_CAP, WF_LOW_HOURLY_CAP.
+try:
+    DEFAULT_HOURLY_CALL_CAP = max(1, int(os.environ.get("WF_HOURLY_CALL_CAP", "750")))
+except (TypeError, ValueError):
+    DEFAULT_HOURLY_CALL_CAP = 750
+try:
+    DEFAULT_LOW_HOURLY_CAP = max(1, int(os.environ.get("WF_LOW_HOURLY_CAP", "1000")))
+except (TypeError, ValueError):
+    DEFAULT_LOW_HOURLY_CAP = 1000
 
 # Cooldown between fires for a single customer (workflow rows only — this
 # scheduler only drains wf_pending_actions). WS3 lowers this to 1h to match the
@@ -272,6 +293,32 @@ def _shadow_fires_in_last_hour(conn: sqlite3.Connection, now_dt: datetime) -> in
     return int(row["c"]) if row and row["c"] is not None else 0
 
 
+def _low_fires_in_last_hour(
+    conn: sqlite3.Connection, now_dt: datetime, *, shadow_mode: bool
+) -> int:
+    """Count this workflow's priority_class='low' (one_time catch-all) fires in
+    the trailing 60 minutes.
+
+    Subtracted from the combined fire count so the NON-LOW (eligible) 750/hr cap
+    is computed on eligible load alone, while the catch-all draws on its own
+    1000/hr total band (2026-06-07 owner rule). In shadow_mode the rows carry
+    SHADOW_FIRED; live runs carry FIRED. ``cca.count_fires_since`` (the combined
+    live counter) cannot distinguish priority_class, so the catch-all's own
+    contribution is read here from wf_pending_actions. ``fired_at_ist`` is naive
+    IST ``YYYY-MM-DD HH:MM:SS`` (lexicographically sortable) → string ``>=`` is a
+    correct window filter. NULL priority_class (legacy rows) is never 'low', so
+    those correctly count toward the eligible (non-low) tier.
+    """
+    cutoff = (now_dt - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    status = "SHADOW_FIRED" if shadow_mode else "FIRED"
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM wf_pending_actions "
+        "WHERE priority_class = 'low' AND status = ? AND fired_at_ist >= ?",
+        (status, cutoff),
+    ).fetchone()
+    return int(row["c"]) if row and row["c"] is not None else 0
+
+
 # ------------------------------------------------------------- claim + update
 
 
@@ -400,6 +447,7 @@ def run(
     dry_run: bool = False,
     batch_limit: int = DEFAULT_BATCH_LIMIT,
     hourly_call_cap: int = DEFAULT_HOURLY_CALL_CAP,
+    low_hourly_cap: int = DEFAULT_LOW_HOURLY_CAP,
     campaign_id: int = _DEFAULT_CAMPAIGN_ID,
     bot_id: str = _DEFAULT_BOT_ID,
     contact_type: str = _DEFAULT_CONTACT_TYPE,
@@ -427,6 +475,7 @@ def run(
         "errored": 0,
         "shadow_fired": 0,
         "would_fire": 0,  # dry-run only
+        "capped_nonlow": 0,  # eligible rows skipped because the 750 cap was hit
         "status": "ok",
     }
 
@@ -470,28 +519,64 @@ def run(
             fired_last_hour = cca.count_fires_since(
                 cutoff_str, vibrium_db_path=vibrium_db_path
             )
-        headroom = max(0, int(hourly_call_cap) - fired_last_hour)
-        if headroom <= 0:
+        # Two-tier rolling-60min pacing (2026-06-07 owner rule). The catch-all
+        # ('low') is exempt from the eligible 750 cap and draws on a separate
+        # 1000/hr TOTAL band; eligible (non-low) stays capped at 750. We split
+        # the combined count: the catch-all's own fires are subtracted out so the
+        # eligible cap is measured on eligible load alone. low_total_cap is never
+        # below the eligible cap (a misconfig where LOW<NONLOW would otherwise
+        # throttle eligible below its own 750 ceiling).
+        low_fired_last_hour = _low_fires_in_last_hour(
+            conn, now_ist_dt, shadow_mode=shadow_mode
+        )
+        nonlow_fired_last_hour = max(0, fired_last_hour - low_fired_last_hour)
+        nonlow_cap = int(hourly_call_cap)
+        low_total_cap = max(int(low_hourly_cap), nonlow_cap)
+        nonlow_headroom = max(0, nonlow_cap - nonlow_fired_last_hour)
+        total_headroom = max(0, low_total_cap - fired_last_hour)
+        stats["fired_last_hour"] = fired_last_hour
+        stats["nonlow_fired_last_hour"] = nonlow_fired_last_hour
+        stats["low_fired_last_hour"] = low_fired_last_hour
+        # Nothing fires only when the TOTAL ceiling is hit: eligible draws on
+        # nonlow_headroom and the catch-all on the remaining total band, so as
+        # long as the combined hour is below low_total_cap there is still room
+        # for at least the catch-all. (If the eligible 750 sub-cap alone is hit
+        # but total room remains, eligible rows are skipped per-row in the loop
+        # while 'low' rows — ordered last — still fire into the remaining band.)
+        if total_headroom <= 0:
             stats["status"] = "capacity_reached"
-            stats["fired_last_hour"] = fired_last_hour
             _emit_heartbeat(
                 conn,
                 "ok",
                 {
                     "reason": "hourly_cap_reached",
                     "fired_last_hour": fired_last_hour,
-                    "hourly_call_cap": int(hourly_call_cap),
+                    "nonlow_fired_last_hour": nonlow_fired_last_hour,
+                    "low_fired_last_hour": low_fired_last_hour,
+                    "hourly_call_cap": nonlow_cap,
+                    "low_hourly_cap": low_total_cap,
                     **stats,
                 },
             )
             log.info(
-                "workflow_scheduler: hourly cap reached (%d/%d in last 60min) — "
-                "no fires this tick",
+                "workflow_scheduler: total hourly cap reached (%d/%d combined; "
+                "eligible %d/%d, catch-all-exempt) — no fires this tick",
                 fired_last_hour,
-                int(hourly_call_cap),
+                low_total_cap,
+                nonlow_fired_last_hour,
+                nonlow_cap,
             )
             return stats
-        effective_limit = min(int(batch_limit), headroom)
+        # Fetch a full batch (NOT clamped to total_headroom). The SQL orders
+        # eligible-first, so clamping the LIMIT to a small total_headroom would
+        # let an eligible backlog fill every fetched slot and starve 'low' of the
+        # 750→1000 surplus band even when eligible are cap-blocked — defeating
+        # the owner rule. The per-row gates (absolute total-ceiling break +
+        # eligible 750 sub-cap) do the real capping; rows beyond the caps are
+        # never claimed and stay PENDING. batch_limit bounds the fetch, so 'low'
+        # rides the surplus only when the eligible queue fits within a tick
+        # (≈ "all eligible called"), which is exactly the intended behaviour.
+        effective_limit = int(batch_limit)
 
         # --- 4. Claim batch of PENDING rows (priority-ordered) ------------
         # Three-key ordering, designed so first-time calls lead WITHOUT
@@ -521,7 +606,7 @@ def run(
         rows = conn.execute(
             """
             SELECT pa.id, pa.run_id, pa.node_id, pa.attempt_count, pa.customer_id,
-                   pa.scheduled_at_ist, pa.status, pa.cohort_name,
+                   pa.scheduled_at_ist, pa.status, pa.cohort_name, pa.priority_class,
                    w.shadow_mode AS wf_shadow_mode
             FROM wf_pending_actions pa
             JOIN workflow_runs wr ON wr.id = pa.run_id
@@ -587,14 +672,39 @@ def run(
         )
 
         # --- 4. Process each row ------------------------------------------
+        # Running per-tick fire tallies for the two-tier cap (added to the
+        # pre-tick rolling-window counts). total_fired_tick counts EVERY fire
+        # (eligible + catch-all); nonlow_fired_tick counts eligible only. Both
+        # are bumped only on an actual fire path (live success, shadow, or a
+        # dry-run simulated fire) — never on suppressed/errored/lost-claim rows.
+        total_fired_tick = 0
+        nonlow_fired_tick = 0
         for row in rows:
             row_id = int(row["id"])
             cid = int(row["customer_id"])
             run_id = int(row["run_id"])
             cohort_name = row["cohort_name"]
+            cls_is_low = row["priority_class"] == "low"
             # Either shadow latch (CLI flag OR the workflow's DB shadow_mode)
             # forces SHADOW_FIRED — no live CT call.
             effective_shadow = shadow_mode or bool(row["wf_shadow_mode"])
+
+            # 4·pacing. Two-tier per-row hourly cap gate (BEFORE the claim so a
+            # capped row stays PENDING, unclaimed, for the next tick/hour).
+            #   * TOTAL ceiling is absolute — once the combined hour reaches the
+            #     catch-all band, stop the tick (rows are ordered eligible-first,
+            #     so eligible already had first claim on the band).
+            if fired_last_hour + total_fired_tick >= low_total_cap:
+                break
+            #   * Eligible 750 sub-cap holds a non-low row, but we keep scanning
+            #     so 'low' rows (ordered LAST) still fire into the remaining total
+            #     band — the "catch-all ignores the 750 limit once all eligible
+            #     are called" rule. Per-customer safety still applies below (4b).
+            if not cls_is_low and (
+                nonlow_fired_last_hour + nonlow_fired_tick >= nonlow_cap
+            ):
+                stats["capped_nonlow"] += 1
+                continue
 
             # 4a. Atomic claim (race-safe vs concurrent ticks)
             if not _claim_row(conn, row_id):
@@ -662,6 +772,9 @@ def run(
                 )
                 _release_pending(conn, row_id)
                 stats["would_fire"] += 1
+                total_fired_tick += 1
+                if not cls_is_low:
+                    nonlow_fired_tick += 1
                 continue
 
             # 4d. shadow (CLI flag OR workflow DB shadow_mode) — mark
@@ -674,6 +787,9 @@ def run(
                     fired_at_ist=_now_ist_str(),
                 )
                 stats["shadow_fired"] += 1
+                total_fired_tick += 1
+                if not cls_is_low:
+                    nonlow_fired_tick += 1
                 log.info(
                     "workflow_scheduler: SHADOW_FIRED cid=%s row=%d run_id=%d",
                     cid,
@@ -743,6 +859,9 @@ def run(
                         e,
                     )
                 stats["fired"] += 1
+                total_fired_tick += 1
+                if not cls_is_low:
+                    nonlow_fired_tick += 1
                 log.info(
                     "workflow_scheduler: FIRED cid=%s row=%d run_id=%d",
                     cid,

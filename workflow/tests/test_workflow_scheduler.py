@@ -675,3 +675,82 @@ def test_risk_first_ordering_high_risk_fires_under_tight_cap(dbs):
     fired_cids = [str(c.args[0] if c.args else c.kwargs.get("customer_id"))
                   for c in trigger.call_args_list]
     assert fired_cids == ["7000002"], f"expected high-risk first, got {fired_cids}"
+
+
+# ----------------------------------- two-tier cap (2026-06-07 catch-all rule)
+
+
+def _set_priority_low(wf_db_path: Path, *, min_cid: int):
+    """Mark every pending row with customer_id >= min_cid as the 'low'
+    (one_time catch-all, non-agent-allocated) priority class."""
+    conn = sqlite3.connect(str(wf_db_path))
+    try:
+        conn.execute(
+            "UPDATE wf_pending_actions SET priority_class='low' "
+            "WHERE CAST(customer_id AS INTEGER) >= ?",
+            (min_cid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_catchall_fires_past_eligible_cap(dbs):
+    """Owner rule: once eligible hit their (750) cap, the non-agent-allocated
+    catch-all (priority_class='low') keeps firing into the surplus band up to the
+    total ceiling — the eligible cap does NOT block 'low'."""
+    wf, vb = dbs
+    _insert_pending(wf, n=3, run_id_start=1, customer_id_start=9000000)    # eligible
+    _insert_pending(wf, n=2, run_id_start=100, customer_id_start=9100000)  # -> low
+    _set_priority_low(wf, min_cid=9100000)
+
+    trigger = _ok_trigger()
+    stats = wfs.run(
+        workflow_db_path=wf, vibrium_db_path=vb,
+        trigger_fn=trigger, gate_check_fn=_ok_gate(),
+        is_callable_now_fn=_ok_window(), record_fire_fn=MagicMock(),
+        hourly_call_cap=1,    # eligible: only 1/hr
+        low_hourly_cap=10,    # catch-all: up to 10 total
+    )
+    assert stats["fired"] == 3            # 1 eligible + BOTH low
+    assert stats["capped_nonlow"] == 2    # other 2 eligible held at the cap
+    fired_cids = sorted(str(c.args[0]) for c in trigger.call_args_list)
+    assert fired_cids == ["9000000", "9100000", "9100001"]
+
+
+def test_total_ceiling_breaks_tick(dbs):
+    """The catch-all is exempt from the 750 eligible cap but NOT infinite: the
+    total ceiling (low_hourly_cap) stops the tick once combined fires reach it,
+    leaving the rest PENDING for the next tick/hour."""
+    wf, vb = dbs
+    _insert_pending(wf, n=2, run_id_start=1, customer_id_start=9000000)    # eligible
+    _insert_pending(wf, n=5, run_id_start=100, customer_id_start=9100000)  # -> low
+    _set_priority_low(wf, min_cid=9100000)
+
+    trigger = _ok_trigger()
+    stats = wfs.run(
+        workflow_db_path=wf, vibrium_db_path=vb,
+        trigger_fn=trigger, gate_check_fn=_ok_gate(),
+        is_callable_now_fn=_ok_window(), record_fire_fn=MagicMock(),
+        hourly_call_cap=2, low_hourly_cap=3,   # eligible 2, total ceiling 3
+    )
+    assert stats["fired"] == 3                  # 2 eligible + 1 low, then break
+    pending = [r for r in _all_rows(wf) if r["status"] == "PENDING"]
+    assert len(pending) == 4                    # 4 low rows untouched past ceiling
+
+
+def test_eligible_never_exceeds_its_cap_even_with_high_low_cap(dbs):
+    """Regression: raising the catch-all ceiling must NOT raise the eligible cap.
+    Eligible (non-low) rows are still bounded by hourly_call_cap."""
+    wf, vb = dbs
+    _insert_pending(wf, n=5)   # all eligible (priority_class NULL)
+
+    trigger = _ok_trigger()
+    stats = wfs.run(
+        workflow_db_path=wf, vibrium_db_path=vb,
+        trigger_fn=trigger, gate_check_fn=_ok_gate(),
+        is_callable_now_fn=_ok_window(), record_fire_fn=MagicMock(),
+        hourly_call_cap=2, low_hourly_cap=1000,
+    )
+    assert stats["fired"] == 2
+    assert stats["capped_nonlow"] == 3
