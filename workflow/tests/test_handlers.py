@@ -93,6 +93,14 @@ def _node(node_type: str, config: dict, edges: dict = None) -> NodeConfig:
     )
 
 
+def _ist_now_str() -> str:
+    """IST-naive 'now' string — WAIT_UNTIL anchors relative/rotate offsets to the
+    run's entered_node_at_ist, so park-asserting tests must set a RECENT entry
+    (a freshly-entered run has entry≈now). See test_relative_hour_treadmill_breaks
+    for the past-entry advance case."""
+    return datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+
 # --------------------------------------------------------------------------
 # Registry sanity
 # --------------------------------------------------------------------------
@@ -910,6 +918,7 @@ class TestSwitch:
 
 class TestWaitUntil:
     def test_relative_t_plus_1_day(self, base_run: Run):
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → future deadline → park
         node = _node("WAIT_UNTIL", {"relative": "T+1 day at 08:00"})
         result = wait_mod.execute(node, base_run, ctx=None, txn=None)
         assert result.next_edge == "next"
@@ -926,6 +935,7 @@ class TestWaitUntil:
         assert base_run.ready_at_ist == result.ready_at_ist
 
     def test_relative_t_plus_n_hour(self, base_run: Run):
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → +3h is future → park
         node = _node("WAIT_UNTIL", {"relative": "T+3 hour"})
         result = wait_mod.execute(node, base_run, ctx=None, txn=None)
         assert result.next_edge == "next"
@@ -974,6 +984,7 @@ class TestWaitUntil:
 
     def test_rotate_picks_indexed_hour_tomorrow(self, base_run: Run):
         # attempts=1 → best_hours[1]=14; day_offset=1 → parks tomorrow 14:00.
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → tomorrow is future → park
         base_run.scratchpad = {"best_hours": [9, 14, 17], "attempts": 1}
         result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
         assert result.next_edge == "next"
@@ -983,6 +994,7 @@ class TestWaitUntil:
 
     def test_rotate_wraps_index(self, base_run: Run):
         # attempts=4, 3 hours → 4 % 3 = 1 → best_hours[1]=14.
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → tomorrow is future → park
         base_run.scratchpad = {"best_hours": [9, 14, 17], "attempts": 4}
         result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
         parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
@@ -998,6 +1010,7 @@ class TestWaitUntil:
 
     def test_rotate_fallback_when_best_hours_absent(self, base_run: Run):
         # No best_hours → population default [10,13,16]; attempts=0 → 10:00.
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → tomorrow is future → park
         base_run.scratchpad = {"attempts": 0}
         result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
         parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
@@ -1005,6 +1018,7 @@ class TestWaitUntil:
 
     def test_rotate_ignores_out_of_window_hours(self, base_run: Run):
         # 23 is outside [8,18] → filtered; remaining [9,16]; attempts=1 → 16.
+        base_run.entered_node_at_ist = _ist_now_str()  # fresh entry → tomorrow is future → park
         base_run.scratchpad = {"best_hours": [23, 9, 16], "attempts": 1}
         result = wait_mod.execute(self._rotate_node(), base_run, ctx=None, txn=None)
         parsed = datetime.strptime(result.ready_at_ist, "%Y-%m-%d %H:%M:%S")
@@ -1016,6 +1030,40 @@ class TestWaitUntil:
         node = _node("WAIT_UNTIL", {"rotate_day_offset": 1, "relative": "T+1 day"})
         result = wait_mod.execute(node, base_run, ctx=None, txn=None)
         assert result.next_edge == "error"
+
+    # ---- Treadmill regression (the production bug this fix closes) ----
+    # A forward relative/rotate offset anchored to `now` re-parks forever because
+    # the handler only re-runs once the prior deadline lands, at which point
+    # now+offset is again future. Anchoring to entered_node_at_ist makes the
+    # deadline fixed, so once `offset` has elapsed since entry the run ADVANCES.
+    def test_relative_hour_treadmill_breaks(self, base_run: Run):
+        # Entered 2h ago, T+1 hour → deadline (entry+1h) is now 1h in the PAST
+        # → must advance (ACTIVE, ready_at_ist=None), NOT re-park.
+        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(hours=2)
+        base_run.entered_node_at_ist = anchor.strftime("%Y-%m-%d %H:%M:%S")
+        result = wait_mod.execute(_node("WAIT_UNTIL", {"relative": "T+1 hour"}), base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        assert result.ready_at_ist is None
+        assert base_run.status == "ACTIVE"
+
+    def test_rotate_treadmill_breaks(self, base_run: Run):
+        # Entered 3 days ago, day_offset=0, best_hour=18:00. Clock frozen to 08:30
+        # so the discriminator is the ANCHOR, not the wall-clock:
+        #   OLD (now-anchored): target = TODAY 18:00 → future → PARK (regression).
+        #   NEW (entry-anchored): target = 3-days-ago 18:00 → past → ADVANCE.
+        # Without the freeze this test is vacuous (day_offset=0 + now-anchor lands
+        # on today, already past during most call-window hours).
+        from unittest.mock import patch
+        anchor = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) - timedelta(days=3)
+        base_run.entered_node_at_ist = anchor.strftime("%Y-%m-%d %H:%M:%S")
+        base_run.scratchpad = {"best_hours": [18], "attempts": 0}
+        fake_now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(
+            hour=8, minute=30, second=0, microsecond=0, tzinfo=None)
+        with patch.object(wait_mod, "_now_ist", return_value=fake_now):
+            result = wait_mod.execute(self._rotate_node(day_offset=0), base_run, ctx=None, txn=None)
+        assert result.next_edge == "next"
+        assert result.ready_at_ist is None
+        assert base_run.status == "ACTIVE"
 
 
 # --------------------------------------------------------------------------

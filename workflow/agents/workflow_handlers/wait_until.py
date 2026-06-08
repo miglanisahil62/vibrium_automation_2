@@ -10,8 +10,14 @@ Node config shape (one of two forms):
 Time format:
   * All computations are IST-naive (``YYYY-MM-DD HH:MM:SS``) — matches
     ``await_disposition.py`` and the canonical workflow-event-ts contract.
-  * Anchor for relative offsets is ``datetime.now(IST)`` at handler-execution
-    time (the executor's tick clock).
+  * Anchor for relative/rotate offsets is the run's ``entered_node_at_ist``
+    (when the run entered THIS node), falling back to ``datetime.now(IST)`` when
+    that is absent. It is deliberately NOT ``now``: a pure forward offset (e.g.
+    "T+1 hour") anchored to ``now`` is a moving target — the handler only re-runs
+    once the prior deadline is reached, at which point ``now+offset`` is again in
+    the future, ``late`` is never true, and the run re-parks forever (a treadmill
+    that never returns to FIRE). Anchoring to entry time fixes the deadline so it
+    actually expires. The late/early comparison still uses real ``now``.
   * Absolute dates accept ONLY ``YYYY-MM-DD``. Any other format → ``error``
     edge with ``wait_error="invalid_date_format"``. Time of day for absolute
     is implicit 00:00:00 IST (operator intent: "park until that calendar
@@ -62,6 +68,20 @@ _RE_HOUR = re.compile(r"^T\+(\d+)\s+hour$")
 
 def _now_ist() -> datetime:
     return datetime.now(_IST).replace(tzinfo=None)
+
+
+def _parse_ist(ts: Optional[str]) -> Optional[datetime]:
+    """Parse an IST-naive ``YYYY-MM-DD HH:MM:SS`` timestamp. None on any failure.
+
+    Used to anchor relative/rotate offsets to the run's node-entry time. Returns
+    None (not a default) so the caller can fall back to ``now`` explicitly.
+    """
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    try:
+        return datetime.strptime(ts.strip()[:19], _IST_TS_FMT)
+    except ValueError:  # stashfin-lint: ignore  # documented contract: returns None to signal "unparseable"; caller (execute) falls back to now explicitly. Not a silent default.
+        return None
 
 
 def _parse_relative(spec: str, now: datetime) -> Optional[datetime]:
@@ -191,6 +211,14 @@ def execute(
         )
 
     now = _now_ist()
+    # Anchor relative/rotate offsets to when the run ENTERED this node, not to
+    # `now`. A forward offset anchored to `now` is a moving target: the handler
+    # only re-runs once the prior deadline is reached, so now+offset is again in
+    # the future, `late` is never true, and the run re-parks forever (treadmill —
+    # never returns to FIRE). entry+offset is fixed and goes past after `offset`
+    # elapses → the run advances. Fall back to `now` if entry time is absent
+    # (first-ever evaluation has entry==now anyway). `late` below still uses now.
+    anchor = _parse_ist(run.entered_node_at_ist) or now
     target: Optional[datetime] = None
 
     # WS4: optional reset keys applied on the exit edge (e.g. attempts_today=0 on
@@ -201,7 +229,7 @@ def execute(
         reset_patch = dict(raw_reset)
 
     if is_rotate:
-        target, rot_err = _rotate_target(node, run, now)
+        target, rot_err = _rotate_target(node, run, anchor)
         if rot_err is not None:
             return _error(rot_err, f"WAIT_UNTIL rotate error: {rot_err}")
     elif relative:
@@ -210,7 +238,7 @@ def execute(
                 "invalid_relative_format",
                 f"WAIT_UNTIL relative not a string: {type(relative).__name__}",
             )
-        target = _parse_relative(relative, now)
+        target = _parse_relative(relative, anchor)
         if target is None:
             return _error(
                 "invalid_relative_format",
