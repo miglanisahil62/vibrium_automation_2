@@ -17,8 +17,9 @@ The seven conditions:
   D. KILL_SWITCH     — Latest ``wf_kill_switch.action='KILL'`` with no
                        subsequent ``RESUME`` for >1h.
   E. QUEUE_BUILDUP   — Any single tick in the last hour processed more than
-                       ``TICK_BATCH_LIMIT * 0.9`` rows (signal that the
-                       executor / scheduler can't keep up).
+                       90% of THAT daemon's batch ceiling (executor cap 5000,
+                       scheduler cap 800) — signal it maxed out and the backlog
+                       drains slower than capacity.
   F. MORNING_HEALTH  — Unattended-ops net: after the morning window, today's
                        cohort was prefetched but 0 enrolled, or enrolled but
                        0 real-fired, or nothing prefetched at all (P0). A
@@ -95,10 +96,28 @@ MORNING_PIPELINE_CHECK_HOUR = 11
 RUN_ERROR_THRESHOLD_HOURS = 2
 RUN_WAITING_THRESHOLD_DAYS = 7
 KILL_SWITCH_THRESHOLD_HOURS = 1
-# Per PHASES.md Phase 8.5: queue building up = tick processed > TICK_BATCH_LIMIT * 0.9.
-# Default TICK_BATCH_LIMIT=100 in workflow.agents.workflow, so threshold = 90 rows.
-TICK_BATCH_LIMIT = 100
-QUEUE_BUILDUP_ROW_THRESHOLD = int(TICK_BATCH_LIMIT * 0.9)
+# Per PHASES.md Phase 8.5: "queue building up" = a tick processed near its batch
+# ceiling (i.e. it maxed out and the backlog drains slower than capacity). The
+# ceiling is PER DAEMON, so a single global threshold mis-fires: the executor
+# runs with --batch-limit 5000 (run.sh executor mode) and the scheduler with 800
+# (workflow_scheduler.DEFAULT_BATCH_LIMIT). The old global TICK_BATCH_LIMIT=100
+# (threshold 90) tripped on every normal high-volume tick — pure noise.
+# Threshold per agent = 90% of THAT agent's real per-tick batch ceiling.
+# NOTE: keep these in sync with run.sh (executor `--batch-limit 5000`) and
+# workflow_scheduler.DEFAULT_BATCH_LIMIT (800) if either changes.
+QUEUE_BUILDUP_FRACTION = 0.9
+_EXECUTOR_BATCH_LIMIT = 5000   # run.sh: executor) FLAGS=(--batch-limit 5000)
+_SCHEDULER_BATCH_LIMIT = 800   # workflow_scheduler.DEFAULT_BATCH_LIMIT (WF_SCHED_BATCH_LIMIT)
+# Map the agent name stamped in wf_agent_events.summary_json → its batch ceiling.
+_AGENT_BATCH_CEILING = {
+    "workflow": _EXECUTOR_BATCH_LIMIT,           # executor daemon (stamps rows_processed)
+    "workflow_executor": _EXECUTOR_BATCH_LIMIT,
+    "workflow_scheduler": _SCHEDULER_BATCH_LIMIT,  # scheduler daemon (stamps processed)
+    "scheduler": _SCHEDULER_BATCH_LIMIT,
+}
+# Fallback for any other daemon: use the larger ceiling so we never spam on a
+# daemon whose true cap we haven't mapped (false-negative is safer than noise here).
+_DEFAULT_BATCH_CEILING = _EXECUTOR_BATCH_LIMIT
 QUEUE_BUILDUP_LOOKBACK_MIN = 60
 
 
@@ -429,10 +448,11 @@ def detect_d_kill_switch(conn: sqlite3.Connection, now: datetime) -> list[Alert]
 
 
 def detect_e_queue_buildup(conn: sqlite3.Connection, now: datetime) -> list[Alert]:
-    """Any single tick within the last hour processed more than
-    ``TICK_BATCH_LIMIT * 0.9`` rows. Implementation reads
-    ``wf_agent_events.summary_json`` looking for either ``rows_processed`` or
-    ``processed`` keys (Phase 9 daemons stamp one of these)."""
+    """Any single tick within the last hour processed more than 90% of THAT
+    daemon's batch ceiling (per-agent: executor 5000, scheduler 800; see
+    ``_AGENT_BATCH_CEILING``). Implementation reads ``wf_agent_events.summary_json``
+    looking for either ``rows_processed`` or ``processed`` keys (Phase 9 daemons
+    stamp one of these)."""
     cutoff = now - timedelta(minutes=QUEUE_BUILDUP_LOOKBACK_MIN)
     cutoff_s = _ist_str(cutoff)
     cur = conn.execute(
@@ -454,20 +474,27 @@ def detect_e_queue_buildup(conn: sqlite3.Connection, now: datetime) -> list[Aler
             rows = summary.get("processed")
         if not isinstance(rows, (int, float)):
             continue
-        if rows > QUEUE_BUILDUP_ROW_THRESHOLD:
+        # Threshold is per-agent: 90% of THAT daemon's real batch ceiling, so an
+        # executor tick (cap 5000) and a scheduler tick (cap 800) are each judged
+        # against their own ceiling rather than a single stale global number.
+        ceiling = _AGENT_BATCH_CEILING.get(agent, _DEFAULT_BATCH_CEILING)
+        threshold = int(ceiling * QUEUE_BUILDUP_FRACTION)
+        if rows > threshold:
             hot.append(
                 {
                     "ts_ist": ts_s,
                     "agent": agent,
                     "rows_processed": int(rows),
+                    "ceiling": ceiling,
+                    "threshold": threshold,
                 }
             )
     if not hot:
         return []
     body_lines = [
         f"{len(hot)} tick(s) in the last {QUEUE_BUILDUP_LOOKBACK_MIN}min "
-        f"processed more than {QUEUE_BUILDUP_ROW_THRESHOLD} rows "
-        f"(TICK_BATCH_LIMIT={TICK_BATCH_LIMIT}, threshold = 90%).",
+        f"processed > 90% of their daemon's batch ceiling "
+        f"(executor cap {_EXECUTOR_BATCH_LIMIT}, scheduler cap {_SCHEDULER_BATCH_LIMIT}).",
         "",
         "Sample:",
     ]

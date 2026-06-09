@@ -285,29 +285,32 @@ def test_d_kill_switch_silent_after_resume(tmp_path: Path) -> None:
 
 
 def test_e_queue_buildup_fires(tmp_path: Path) -> None:
+    # Per-agent thresholds: 90% of each daemon's batch ceiling.
+    # executor ceiling 5000 → 4500; scheduler ceiling 800 → 720.
     db = _make_db(tmp_path)
     now = datetime.now(IST)
     _seed_fresh_heartbeats(db, now)
     conn = sqlite3.connect(str(db))
     try:
-        # Hot tick: 95 rows > threshold (90).
-        conn.execute(
-            "INSERT INTO wf_agent_events(ts_ist, agent, status, summary_json) "
-            "VALUES (?, 'workflow_executor', 'ok', ?)",
-            (
-                _ist_str(now - timedelta(minutes=5)),
-                json.dumps({"rows_processed": 95}),
-            ),
-        )
-        # Cool tick: 10 rows.
-        conn.execute(
-            "INSERT INTO wf_agent_events(ts_ist, agent, status, summary_json) "
-            "VALUES (?, 'workflow_scheduler', 'ok', ?)",
-            (
-                _ist_str(now - timedelta(minutes=5)),
-                json.dumps({"processed": 10}),
-            ),
-        )
+        ticks = [
+            # HOT: executor near its 5000 cap. Executor stamps `processed`
+            # (top-level, agent='workflow') — the real production shape.
+            ("workflow", {"processed": 4800}),
+            # NOT hot, AND exercises the tolerated `rows_processed` alias key:
+            # 95 used to false-fire under the old global-100 threshold. Regression
+            # guard for the 2026-06-09 noise fix.
+            ("workflow", {"rows_processed": 95}),
+            # HOT: scheduler near its 800 cap (stamps `processed`).
+            ("workflow_scheduler", {"processed": 790}),
+            # NOT hot: scheduler well under its 720 threshold.
+            ("workflow_scheduler", {"processed": 10}),
+        ]
+        for agent, summary in ticks:
+            conn.execute(
+                "INSERT INTO wf_agent_events(ts_ist, agent, status, summary_json) "
+                "VALUES (?, ?, 'ok', ?)",
+                (_ist_str(now - timedelta(minutes=5)), agent, json.dumps(summary)),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -316,8 +319,34 @@ def test_e_queue_buildup_fires(tmp_path: Path) -> None:
     conds = [a["condition"] for a in stats["alerts"]]
     assert "E_QUEUE_BUILDUP" in conds
     e = next(a for a in stats["alerts"] if a["condition"] == "E_QUEUE_BUILDUP")
-    assert len(e["details"]["hot_ticks"]) == 1
-    assert e["details"]["hot_ticks"][0]["rows_processed"] == 95
+    hot_rows = sorted(h["rows_processed"] for h in e["details"]["hot_ticks"])
+    # Only the executor@4800 and scheduler@790 are hot; 95 and 10 are excluded.
+    assert hot_rows == [790, 4800]
+
+
+def test_e_queue_buildup_executor_high_volume_does_not_fire(tmp_path: Path) -> None:
+    # Regression for the 2026-06-09 noise fix: a normal high-volume executor tick
+    # (855 rows — real morning value) is FAR below the executor's 4500 threshold,
+    # so it must NOT trip E_QUEUE_BUILDUP. Under the old global-100 threshold this
+    # spammed a P1 every hour.
+    db = _make_db(tmp_path)
+    now = datetime.now(IST)
+    _seed_fresh_heartbeats(db, now)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO wf_agent_events(ts_ist, agent, status, summary_json) "
+            "VALUES (?, 'workflow', 'ok', ?)",
+            # Executor stamps `processed` (top-level) — the real production shape.
+            (_ist_str(now - timedelta(minutes=5)), json.dumps({"processed": 855})),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = run(db, dry_run=True)
+    conds = [a["condition"] for a in stats["alerts"]]
+    assert "E_QUEUE_BUILDUP" not in conds
 
 
 # 6. Cooldown — same condition twice in 60 min → only first fires
