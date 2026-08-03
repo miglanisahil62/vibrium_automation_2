@@ -135,7 +135,7 @@ MAX_CALLS_PER_DAY = 3
 # existing adhoc Vibrium campaign (config.json campaign_id/bot_id/contact_type)
 # so the workflow reuses the same live VB external trigger. Overrideable via
 # run() kwargs so future workflows can target different campaigns without code.
-_DEFAULT_CAMPAIGN_ID = 1778502723   # main VB voice bot campaign (adhoc config.json)
+_DEFAULT_CAMPAIGN_ID = 1785736949   # main VB voice bot campaign (adhoc config.json). Updated 2026-08-03: old 1778502723 was stopped/not external-trigger (CT err 77 → 0 fires on first live day).
 _DEFAULT_BOT_ID = "VB00000005"
 _DEFAULT_CONTACT_TYPE = "collection"
 
